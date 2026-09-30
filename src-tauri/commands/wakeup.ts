@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { TriggerRecord, TriggerResult, WakeupConfig } from '../../src-core/wakeup/types'
-import { executeWithBackoff } from '../../src-core/wakeup/retry'
+import { executeWithBackoff, resolveTriggerCooldownMs } from '../../src-core/wakeup/retry'
 
 export type { WakeupConfig }
 
@@ -26,9 +26,14 @@ export interface TestTriggerArgs {
 /** Stored wakeup config (mirrors CLI `wakeup config`; null when never configured). */
 export const getWakeupConfig = (): Promise<WakeupConfig | null> => invoke('wakeup_config')
 
-/** Persist config + install to the native scheduler (cron mac/Linux, schtasks Windows). */
+/** Persist config + install to the native scheduler (cron mac/Linux, schtasks Windows).
+ * `cooldownMs` is resolved once here (single resolution point) and travels
+ * with the install payload so the Task 5 `wakeup_install` handler can feed it
+ * straight to the detector (`detectResetAndTrigger(snapshot, cooldownMs)` /
+ * `runScheduledTrigger`) without re-deriving it. Unknown payload fields are
+ * serde-ignorable if a handler only deserializes `config`. */
 export const installWakeup = (config: WakeupConfig): Promise<void> =>
-  invoke('wakeup_install', { config })
+  invoke('wakeup_install', { config, cooldownMs: resolveTriggerCooldownMs(config) })
 
 export const uninstallWakeup = (): Promise<void> => invoke('wakeup_uninstall')
 

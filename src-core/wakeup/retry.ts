@@ -107,3 +107,32 @@ export async function executeWithBackoff<T>(fn: () => Promise<T>, options: Backo
 export function resolveCooldownMs(resetCooldownMinutes?: number): number {
   return Math.max(0, (resetCooldownMinutes ?? DEFAULT_COOLDOWN_MINUTES) * 60_000)
 }
+
+// ============================================================================
+// Production cooldown resolver: config -> detector cooldownMs
+// ============================================================================
+
+/**
+ * Cooldown fields a wakeup config may carry. `cooldownMinutes` is the GUI
+ * alias (accepted for forward compatibility); `resetCooldownMinutes` is the
+ * upstream `WakeupConfig` field. `WakeupConfig` itself satisfies this type.
+ */
+export interface WakeupCooldownSource {
+  cooldownMinutes?: number
+  resetCooldownMinutes?: number
+}
+
+/**
+ * Resolve the effective detector cooldown in milliseconds from a config.
+ *
+ * Precedence: `cooldownMinutes` (GUI alias) wins when present, else upstream
+ * `resetCooldownMinutes`. When NEITHER is present, the 1h upstream detector
+ * default wins — per Global Constraints (cooldown default 1 hour) — NOT
+ * `getDefaultConfig`'s `resetCooldownMinutes: 10`: that default only applies
+ * to configs that actually carry the field (it governs the quota-reset UI
+ * cadence upstream), while an absent field means "no opinion", so the
+ * detector gate stays at 1h to match the ~5h reset window.
+ */
+export function resolveTriggerCooldownMs(config: WakeupCooldownSource | null | undefined): number {
+  return resolveCooldownMs(config?.cooldownMinutes ?? config?.resetCooldownMinutes)
+}

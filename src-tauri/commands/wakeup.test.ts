@@ -39,9 +39,17 @@ describe('wakeup IPC', () => {
   it('installs with the full config and uninstalls', async () => {
     const config = { ...getDefaultConfig(), enabled: true }
     await installWakeup(config)
-    expect(invoke).toHaveBeenCalledWith('wakeup_install', { config })
+    // default config carries resetCooldownMinutes: 10 -> resolved to ms in the payload
+    expect(invoke).toHaveBeenCalledWith('wakeup_install', { config, cooldownMs: 600_000 })
     await uninstallWakeup()
     expect(invoke).toHaveBeenCalledWith('wakeup_uninstall')
+  })
+
+  it('resolves an absent cooldown field to the 1h default on install', async () => {
+    // Field present but undefined behaves as absent via ?? (simulates a legacy config).
+    const config = { ...getDefaultConfig(), enabled: true, resetCooldownMinutes: undefined as unknown as number }
+    await installWakeup(config)
+    expect(invoke).toHaveBeenCalledWith('wakeup_install', { config, cooldownMs: 3_600_000 })
   })
 
   it('sends test-trigger args through', async () => {

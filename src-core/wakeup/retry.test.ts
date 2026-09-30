@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeWithBackoff, backoffDelayMs, resolveCooldownMs } from './retry'
+import { executeWithBackoff, backoffDelayMs, resolveCooldownMs, resolveTriggerCooldownMs } from './retry'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -78,5 +78,21 @@ describe('resolveCooldownMs', () => {
   it('preserves the 1h upstream default when absent', () => {
     expect(resolveCooldownMs(undefined)).toBe(3_600_000)
     expect(resolveCooldownMs()).toBe(3_600_000)
+  })
+})
+
+describe('resolveTriggerCooldownMs', () => {
+  it('prefers the GUI cooldownMinutes alias', () => {
+    expect(resolveTriggerCooldownMs({ cooldownMinutes: 10, resetCooldownMinutes: 60 })).toBe(600_000)
+  })
+
+  it('falls back to upstream resetCooldownMinutes', () => {
+    expect(resolveTriggerCooldownMs({ resetCooldownMinutes: 10 })).toBe(600_000)
+  })
+
+  it('preserves the 1h default for absent or nullish configs', () => {
+    expect(resolveTriggerCooldownMs({})).toBe(3_600_000)
+    expect(resolveTriggerCooldownMs(null)).toBe(3_600_000)
+    expect(resolveTriggerCooldownMs(undefined)).toBe(3_600_000)
   })
 })
