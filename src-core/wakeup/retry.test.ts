@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { executeWithBackoff, backoffDelayMs } from './retry'
+import { executeWithBackoff, backoffDelayMs, resolveCooldownMs } from './retry'
 
 beforeEach(() => {
   vi.useFakeTimers()
@@ -67,5 +67,16 @@ describe('executeWithBackoff', () => {
     })
     await expect(executeWithBackoff(fn, { shouldRetry: () => false })).rejects.toThrow('fatal')
     expect(fn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('resolveCooldownMs', () => {
+  it('maps config minutes to detector milliseconds', () => {
+    expect(resolveCooldownMs(10)).toBe(600_000)
+  })
+
+  it('preserves the 1h upstream default when absent', () => {
+    expect(resolveCooldownMs(undefined)).toBe(3_600_000)
+    expect(resolveCooldownMs()).toBe(3_600_000)
   })
 })

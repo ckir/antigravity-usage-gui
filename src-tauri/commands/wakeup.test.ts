@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: vi.fn(async (cmd: string) => {
     switch (cmd) {
@@ -47,6 +47,40 @@ describe('wakeup IPC', () => {
   it('sends test-trigger args through', async () => {
     await testTrigger({ email: 'a@x.com', model: 'gemini-3-flash', prompt: 'hi' })
     expect(invoke).toHaveBeenCalledWith('wakeup_test', {
+      email: 'a@x.com',
+      model: 'gemini-3-flash',
+      prompt: 'hi',
+    })
+  })
+})
+
+describe('wakeup trigger retry wiring', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.mocked(invoke).mockClear()
+  })
+
+  it('retries a twice-failing testTrigger through backoff (3 attempts)', async () => {
+    const mocked = vi.mocked(invoke)
+    mocked.mockClear()
+    mocked.mockRejectedValueOnce(new Error('net down'))
+    mocked.mockRejectedValueOnce(new Error('net down'))
+    mocked.mockResolvedValueOnce({ success: true, results: [] })
+
+    const pending = testTrigger({ email: 'a@x.com', model: 'gemini-3-flash', prompt: 'hi' })
+    expect(mocked).toHaveBeenCalledTimes(1)
+
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(mocked).toHaveBeenCalledTimes(2)
+
+    await vi.advanceTimersByTimeAsync(2000)
+    await expect(pending).resolves.toEqual({ success: true, results: [] })
+    expect(mocked).toHaveBeenCalledTimes(3)
+    expect(mocked).toHaveBeenNthCalledWith(1, 'wakeup_test', {
       email: 'a@x.com',
       model: 'gemini-3-flash',
       prompt: 'hi',

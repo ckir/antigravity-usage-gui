@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { isModelUnused, findUnusedModels, hasUnusedModels, detectResetAndTrigger } from './reset-detector'
-import { updateResetState } from './storage'
+import { loadResetState, updateResetState } from './storage'
 import { executeTrigger } from './trigger-service'
+import { resolveCooldownMs } from './retry'
 import type { QuotaSnapshot, ModelQuotaInfo } from '../quota/types'
+import type { ResetState } from './types'
 
 vi.mock('./storage', () => ({
   loadWakeupConfig: () => ({
@@ -19,12 +21,14 @@ vi.mock('./storage', () => ({
     wakeOnReset: false,
     resetCooldownMinutes: 10,
   }),
-  loadResetState: () => ({
-    'gemini-3-flash': {
-      lastResetAt: new Date().toISOString(),
-      lastTriggeredTime: new Date().toISOString(),
-    },
-  }),
+  loadResetState: vi.fn(
+    (): ResetState => ({
+      'gemini-3-flash': {
+        lastResetAt: new Date().toISOString(),
+        lastTriggeredTime: new Date().toISOString(),
+      },
+    })
+  ),
   updateResetState: vi.fn(),
 }))
 
@@ -100,6 +104,12 @@ describe('detectResetAndTrigger cooldown override', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {})
     vi.mocked(executeTrigger).mockClear()
     vi.mocked(updateResetState).mockClear()
+    vi.mocked(loadResetState).mockReturnValue({
+      'gemini-3-flash': {
+        lastResetAt: new Date().toISOString(),
+        lastTriggeredTime: new Date().toISOString(),
+      },
+    })
   })
 
   afterEach(() => {
@@ -118,5 +128,21 @@ describe('detectResetAndTrigger cooldown override', () => {
     expect(result.triggeredModels).toEqual(['gemini-3-flash'])
     expect(executeTrigger).toHaveBeenCalledTimes(1)
     expect(updateResetState).toHaveBeenCalledWith('gemini-3-flash', expect.any(String))
+  })
+
+  it('flows config resetCooldownMinutes end-to-end into the detector', async () => {
+    // Last triggered 30min ago: inside the default 1h cooldown, outside a 10min config cooldown.
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString()
+    vi.mocked(loadResetState).mockReturnValue({
+      'gemini-3-flash': { lastResetAt: thirtyMinAgo, lastTriggeredTime: thirtyMinAgo },
+    })
+    const snap = snapshot([model({ modelId: 'gemini-3-flash' })])
+
+    expect(await detectResetAndTrigger(snap)).toEqual({ triggered: false, triggeredModels: [] })
+
+    const result = await detectResetAndTrigger(snap, resolveCooldownMs(10))
+    expect(resolveCooldownMs(10)).toBe(600_000)
+    expect(result.triggered).toBe(true)
+    expect(result.triggeredModels).toEqual(['gemini-3-flash'])
   })
 })

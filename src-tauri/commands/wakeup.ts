@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import type { TriggerRecord, TriggerResult, WakeupConfig } from '../../src-core/wakeup/types'
+import { executeWithBackoff } from '../../src-core/wakeup/retry'
 
 export type { WakeupConfig }
 
@@ -31,9 +32,15 @@ export const installWakeup = (config: WakeupConfig): Promise<void> =>
 
 export const uninstallWakeup = (): Promise<void> => invoke('wakeup_uninstall')
 
-/** Manual single-model trigger (prompt defaults to "hi" backend-side). */
+/** Manual single-model trigger (prompt defaults to "hi" backend-side).
+ * Retried with exponential backoff (3 attempts) at our command layer: the
+ * actual trigger executes backend-side (Task 5 `wakeup_test` handler calling
+ * vendored `executeTrigger`), so this wraps the CALL — vendored internals
+ * are untouched. Each attempt re-invokes the backend trigger. */
 export const testTrigger = (args: TestTriggerArgs): Promise<TriggerResult> =>
-  invoke('wakeup_test', { email: args.email, model: args.model, prompt: args.prompt })
+  executeWithBackoff(() =>
+    invoke<TriggerResult>('wakeup_test', { email: args.email, model: args.model, prompt: args.prompt })
+  )
 
 export const getWakeupStatus = (): Promise<WakeupStatus> => invoke('wakeup_status')
 

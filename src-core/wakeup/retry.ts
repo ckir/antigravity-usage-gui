@@ -18,6 +18,8 @@
  * covers transient per-attempt failures (network/API/timeout). Sequential
  * per-account triggering (global constraint) is preserved: wrap each
  * account's `executeTrigger` call individually, never `Promise.all` accounts.
+ *
+ * Also home to `resolveCooldownMs` below (same Task 5 backend audience).
  */
 
 export interface BackoffOptions {
@@ -36,6 +38,9 @@ export interface BackoffOptions {
 export const DEFAULT_MAX_ATTEMPTS = 3
 export const DEFAULT_BASE_DELAY_MS = 1000
 export const DEFAULT_FACTOR = 2
+
+/** Fallback cooldown when the config carries none: 1h, matching upstream. */
+export const DEFAULT_COOLDOWN_MINUTES = 60
 
 /**
  * Delay before the retry following `attempt` (1-based) grows exponentially:
@@ -81,4 +86,24 @@ export async function executeWithBackoff<T>(fn: () => Promise<T>, options: Backo
       await sleep(delayMs)
     }
   }
+}
+
+// ============================================================================
+// Cooldown mapping: WakeupConfig.resetCooldownMinutes -> detector cooldownMs
+// ============================================================================
+
+/**
+ * Map the config cooldown to the `cooldownMs` override of
+ * `detectResetAndTrigger` (see `reset-detector.ts`).
+ *
+ * Explicit mapping because the field names AND units differ: the config
+ * stores `resetCooldownMinutes` (minutes, default 10 in `getDefaultConfig`)
+ * while the detector takes `cooldownMs` (milliseconds, upstream default 1h).
+ * Absent/undefined preserves the 1h upstream default.
+ *
+ * Task 5 wiring: `detectResetAndTrigger(snapshot,
+ * resolveCooldownMs(config.resetCooldownMinutes))`.
+ */
+export function resolveCooldownMs(resetCooldownMinutes?: number): number {
+  return Math.max(0, (resetCooldownMinutes ?? DEFAULT_COOLDOWN_MINUTES) * 60_000)
 }
