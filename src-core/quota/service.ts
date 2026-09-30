@@ -3,7 +3,8 @@
  */
 
 import { debug } from '../core/logger'
-import { getTokenManager } from '../google/token-manager'
+import { getTokenManager, resetTokenManager } from '../google/token-manager'
+import { getAccountManager } from '../accounts/index'
 import { CloudCodeClient, type FetchAvailableModelsResponse } from '../google/cloudcode'
 import { parseQuotaSnapshot } from '../google/parser'
 import { extractProjectId } from '../google/oauth'
@@ -50,6 +51,60 @@ export async function fetchQuota(method: QuotaMethod = 'auto'): Promise<QuotaSna
     return fetchQuotaLocal()
   }
   return fetchQuotaGoogle()
+}
+
+/**
+ * Fetch quota for a specific account.
+ * Ported from upstream commands/quota.ts (GUI adaptation: no process.exit —
+ * callers surface errors in the UI instead).
+ *
+ * CRITICAL: Local method always returns IDE's logged-in account data.
+ * We CANNOT use local method for non-IDE accounts in multi-account mode —
+ * force Google API method to ensure we get the correct account's data.
+ *
+ * Callers fetching multiple accounts MUST call this sequentially, NOT in
+ * parallel: parallel fetching causes race conditions with account switching.
+ */
+export async function fetchQuotaForAccount(
+  email: string,
+  method: QuotaMethod = 'auto'
+): Promise<QuotaSnapshot> {
+  const manager = getAccountManager()
+  const originalActiveEmail = manager.getActiveEmail()
+
+  // CRITICAL: Local method always returns IDE's logged-in account data
+  // We CANNOT use local method for non-IDE accounts in multi-account mode
+  // Force Google API method to ensure we get the correct account's data
+  let effectiveMethod = method
+
+  if (method === 'auto' || method === 'local') {
+    // Always use Google API for multi-account to avoid cache pollution
+    effectiveMethod = 'google'
+    debug('quota', `Forcing Google API for multi-account fetch (email: ${email})`)
+  }
+
+  // Temporarily switch to target account
+  let accountSwitched = false
+  if (email !== originalActiveEmail) {
+    debug('quota', `Switching to ${email} for fetch`)
+    manager.setActiveAccount(email)
+    // CRITICAL: Reset TokenManager singleton so it loads the new account's tokens
+    resetTokenManager()
+    accountSwitched = true
+  }
+
+  try {
+    const snapshot = await fetchQuota(effectiveMethod)
+    return snapshot
+  } finally {
+    // Always restore original active account
+    if (accountSwitched && originalActiveEmail) {
+      debug('quota', `Restoring active account to ${originalActiveEmail}`)
+      manager.setActiveAccount(originalActiveEmail)
+      // Reset TokenManager again to pick up original account's tokens
+      resetTokenManager()
+    }
+  }
 }
 
 /**
