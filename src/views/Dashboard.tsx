@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { useQuota, QUOTA_STALE_MS } from '../hooks/useQuota'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuota, QUOTA_STALE_MS, allQuotasKey, forceRefreshQuotas } from '../hooks/useQuota'
 import { getAllQuotas } from '../../src-tauri/commands/quota'
 import QuotaCard from '../components/QuotaCard'
 import AccountsTable from '../components/AccountsTable'
@@ -8,13 +8,24 @@ import AccountsTable from '../components/AccountsTable'
 export default function Dashboard() {
   const [allModels, setAllModels] = useState(false)
   const [showJson, setShowJson] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
 
+  const queryClient = useQueryClient()
   const quota = useQuota('auto')
   const allAccounts = useQuery({
-    queryKey: ['all-quotas'],
+    queryKey: allQuotasKey,
     queryFn: () => getAllQuotas(false),
     staleTime: QUOTA_STALE_MS,
   })
+
+  const handleRefresh = async (): Promise<void> => {
+    setRefreshing(true)
+    try {
+      await forceRefreshQuotas(queryClient, 'auto')
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const snapshot = quota.data
   const visibleModels = (snapshot?.models ?? []).filter(
@@ -28,12 +39,12 @@ export default function Dashboard() {
         <button
           type="button"
           data-testid="refresh-button"
+          disabled={refreshing}
           onClick={() => {
-            void quota.refetch()
-            void allAccounts.refetch()
+            void handleRefresh()
           }}
         >
-          Refresh
+          {refreshing ? 'Refreshing…' : 'Refresh'}
         </button>
         <label>
           <input

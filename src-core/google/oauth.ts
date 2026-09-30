@@ -453,7 +453,7 @@ export async function startOAuthFlow(options: OAuthOptions = {}): Promise<OAuthR
     info('')
     throw new Error(
       'Manual login needs a pasted redirect URL: call completeManualLogin(pastedUrl, state, redirectUri). ' +
-        'Use buildManualAuthUrl() to get { authUrl, state, redirectUri } for the dialog.'
+        'Use buildManualAuthUrl(redirectUri, state), which returns the authorization URL string, to get the URL for the dialog.'
     )
   }
   

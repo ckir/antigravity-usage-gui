@@ -1,10 +1,24 @@
 import type { ModelQuotaInfo } from '../../src-core/quota/types'
 
-/** Progress bar color: >=50 green, >=20 amber, else red. */
+/**
+ * Normalize upstream `remainingPercentage` to a 0-100 display percent.
+ * Both upstream parsers (google/parser, local/local-parser) store the raw
+ * `remainingFraction` (0-1) in this field, so values in [0,1] are fractions.
+ * Normalization lives here at the consumption boundary — parser field
+ * semantics are left untouched for other tasks.
+ */
+export function toDisplayPercent(raw?: number): number | undefined {
+  if (raw === undefined) return undefined
+  if (raw >= 0 && raw <= 1) return raw * 100
+  return raw
+}
+
+/** Progress bar color: >=50 green, >=20 amber, else red (0-100 scale). */
 export function quotaBarColor(remainingPercentage?: number): string {
-  if (remainingPercentage === undefined) return 'bg-gray-400'
-  if (remainingPercentage >= 50) return 'bg-green-500'
-  if (remainingPercentage >= 20) return 'bg-amber-500'
+  const pct = toDisplayPercent(remainingPercentage)
+  if (pct === undefined) return 'bg-gray-400'
+  if (pct >= 50) return 'bg-green-500'
+  if (pct >= 20) return 'bg-amber-500'
   return 'bg-red-500'
 }
 
@@ -26,7 +40,7 @@ export interface QuotaCardProps {
 }
 
 export default function QuotaCard({ model, stale = false }: QuotaCardProps) {
-  const pct = model.remainingPercentage
+  const pct = toDisplayPercent(model.remainingPercentage)
   return (
     <article data-testid={`quota-card-${model.modelId}`}>
       <header>
