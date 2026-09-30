@@ -5,6 +5,6 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'node',
-    include: ['src-core/**/*.test.ts', 'src/**/*.test.{ts,tsx}']
+    include: ['src-core/**/*.test.ts', 'src/**/*.test.{ts,tsx}', 'src-tauri/**/*.test.ts']
   }
 })
