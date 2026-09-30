@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Dashboard from './views/Dashboard'
 import Accounts from './views/Accounts'
+import Wakeup from './views/Wakeup'
 import Diagnostics from './views/Diagnostics'
 
 /** 5-minute default stale time matching the CLI quota cache (Global Constraints). */
@@ -46,12 +47,7 @@ export default function App() {
         <div className="app-content">
           {view === 'dashboard' && <Dashboard />}
           {view === 'accounts' && <Accounts />}
-          {view === 'wakeup' && (
-            <main data-testid="wakeup-stub">
-              <h1>Wakeup</h1>
-              <p>Wakeup scheduling lands in Task 4.</p>
-            </main>
-          )}
+          {view === 'wakeup' && <Wakeup />}
           {view === 'doctor' && <Diagnostics />}
         </div>
       </div>
