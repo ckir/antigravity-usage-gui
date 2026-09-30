@@ -8,7 +8,8 @@
   },
   "scripts": {
     "dev": "tauri dev",
-    "build": "tsc --noEmit && vite build && tauri build",
+    "build": "npm run build:backend && tsc --noEmit && vite build && tauri build",
+    "build:backend": "node scripts/build-backend.mjs",
     "test": "vitest run",
     "frontend:dev": "vite",
     "frontend:build": "tsc --noEmit && vite build"

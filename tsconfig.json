@@ -17,5 +17,5 @@
     "noFallthroughCasesInSwitch": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "src-core", "src-tauri/commands", "vite.config.ts", "vitest.config.ts"]
+  "include": ["src", "src-core", "src-tauri/commands", "src-tauri/backend", "vite.config.ts", "vitest.config.ts"]
 }

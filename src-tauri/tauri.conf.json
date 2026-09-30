@@ -7,11 +7,12 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "npm run frontend:dev",
-    "beforeBuildCommand": "npm run frontend:build"
+    "beforeBuildCommand": "npm run build:backend && npm run frontend:build"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Antigravity Usage",
         "width": 1100,
         "height": 750
@@ -23,9 +24,27 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi", "dmg", "appimage", "deb"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "category": "Utility",
     "shortDescription": "Antigravity usage dashboard",
-    "longDescription": "Tauri + React GUI for antigravity-usage with full CLI parity."
+    "longDescription": "Tauri + React GUI for antigravity-usage with full CLI parity.",
+    "resources": ["../dist-backend/runner.cjs"]
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/REPLACE_OWNER/antigravity-usage-gui/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU3MUE5M0RBQjY5QzlEN0MKUldSOG5aeTIycE1hVnlMNHY3dkZ0OFFORFlvdy9EYmdXT2Rxb0RCMXJiM2J3WWJaazYvL2xQZVUK"
+    }
   }
 }

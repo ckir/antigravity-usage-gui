@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useQuota, QUOTA_STALE_MS, allQuotasKey, forceRefreshQuotas } from '../hooks/useQuota'
+import { refreshIntervalMs } from '../hooks/useAutoRefresh'
+import { buildTrayTooltip, setTrayTooltip } from '../components/TrayMenu'
 import { getAllQuotas } from '../../src-tauri/commands/quota'
 import QuotaCard from '../components/QuotaCard'
 import AccountsTable from '../components/AccountsTable'
@@ -16,7 +18,16 @@ export default function Dashboard() {
     queryKey: allQuotasKey,
     queryFn: () => getAllQuotas(false),
     staleTime: QUOTA_STALE_MS,
+    refetchInterval: refreshIntervalMs,
   })
+
+  // Keep the Rust tray tooltip on the lowest quota % across accounts.
+  // Best-effort: ignored outside the Tauri runtime (browser/tests).
+  useEffect(() => {
+    if (allAccounts.data) {
+      setTrayTooltip(buildTrayTooltip(allAccounts.data)).catch(() => undefined)
+    }
+  }, [allAccounts.data])
 
   const handleRefresh = async (): Promise<void> => {
     setRefreshing(true)

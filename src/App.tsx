@@ -4,6 +4,7 @@ import Dashboard from './views/Dashboard'
 import Accounts from './views/Accounts'
 import Wakeup from './views/Wakeup'
 import Diagnostics from './views/Diagnostics'
+import { useAutoRefresh } from './hooks/useAutoRefresh'
 
 /** 5-minute default stale time matching the CLI quota cache (Global Constraints). */
 export const APP_STALE_MS = 5 * 60 * 1000
@@ -18,6 +19,12 @@ const queryClient = new QueryClient({
 
 type View = 'dashboard' | 'accounts' | 'wakeup' | 'doctor'
 
+/** 60s poller (inside the provider so it can invalidate quota queries). */
+function AutoRefreshPoller() {
+  useAutoRefresh('auto')
+  return null
+}
+
 const NAV: { id: View; label: string }[] = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'accounts', label: 'Accounts' },
@@ -30,6 +37,7 @@ export default function App() {
 
   return (
     <QueryClientProvider client={queryClient}>
+      <AutoRefreshPoller />
       <div className="app-shell">
         <nav aria-label="Primary" data-testid="sidebar">
           {NAV.map((item) => (
