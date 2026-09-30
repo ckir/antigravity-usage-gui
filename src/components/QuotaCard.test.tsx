@@ -20,6 +20,13 @@ describe('QuotaCard unit boundary', () => {
     expect(quotaBarColor(undefined)).toBe('bg-gray-400')
   })
 
+  it('does not double-normalize tiny fractions (single normalization only)', () => {
+    // 0.005 is a 0-1 fraction ≈ 0.5% → must stay red, not 50 (amber/green)
+    expect(toDisplayPercent(0.005)).toBeCloseTo(0.5)
+    expect(quotaBarColor(0.005)).toBe('bg-red-500')
+    expect(quotaBarColor(0.01)).toBe('bg-red-500')
+  })
+
   it('formats reset countdowns', () => {
     expect(formatResetCountdown(3.5 * 3600 * 1000)).toBe('3h 30m')
     expect(formatResetCountdown(90 * 1000)).toBe('1m 30s')

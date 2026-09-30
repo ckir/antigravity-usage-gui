@@ -56,7 +56,7 @@ export default function QuotaCard({ model, stale = false }: QuotaCardProps) {
       >
         <div
           data-testid="quota-bar"
-          className={quotaBarColor(pct)}
+          className={quotaBarColor(model.remainingPercentage)}
           style={{ width: `${pct ?? 0}%` }}
         />
       </div>
