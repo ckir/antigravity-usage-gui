@@ -1,6 +1,43 @@
-import { describe, it, expect } from 'vitest'
-import { isModelUnused, findUnusedModels, hasUnusedModels } from './reset-detector'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { isModelUnused, findUnusedModels, hasUnusedModels, detectResetAndTrigger } from './reset-detector'
+import { updateResetState } from './storage'
+import { executeTrigger } from './trigger-service'
 import type { QuotaSnapshot, ModelQuotaInfo } from '../quota/types'
+
+vi.mock('./storage', () => ({
+  loadWakeupConfig: () => ({
+    enabled: true,
+    selectedModels: ['gemini-3-flash'],
+    selectedAccounts: undefined,
+    customPrompt: undefined,
+    maxOutputTokens: 1,
+    scheduleMode: 'interval',
+    intervalHours: 6,
+    dailyTimes: ['09:00'],
+    weeklySchedule: {},
+    cronExpression: undefined,
+    wakeOnReset: false,
+    resetCooldownMinutes: 10,
+  }),
+  loadResetState: () => ({
+    'gemini-3-flash': {
+      lastResetAt: new Date().toISOString(),
+      lastTriggeredTime: new Date().toISOString(),
+    },
+  }),
+  updateResetState: vi.fn(),
+}))
+
+vi.mock('../accounts/manager', () => ({
+  getAccountManager: () => ({
+    getAccountEmails: () => ['a@x.com'],
+    getAccountStatus: () => 'valid',
+  }),
+}))
+
+vi.mock('./trigger-service', () => ({
+  executeTrigger: vi.fn(async () => ({ success: true, results: [] })),
+}))
 
 const HOUR_MS = 60 * 60 * 1000
 
@@ -55,5 +92,31 @@ describe('reset detector smart trigger', () => {
     expect(hasUnusedModels(snapshot([model()]))).toBe(true)
     expect(hasUnusedModels(snapshot([model({ remainingPercentage: 10 })]))).toBe(false)
     expect(hasUnusedModels(snapshot([]))).toBe(false)
+  })
+})
+
+describe('detectResetAndTrigger cooldown override', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    vi.mocked(executeTrigger).mockClear()
+    vi.mocked(updateResetState).mockClear()
+  })
+
+  afterEach(() => {
+    vi.mocked(console.log).mockRestore()
+  })
+
+  it('skips a recently triggered model under the default 1h cooldown', async () => {
+    const result = await detectResetAndTrigger(snapshot([model({ modelId: 'gemini-3-flash' })]))
+    expect(result).toEqual({ triggered: false, triggeredModels: [] })
+    expect(executeTrigger).not.toHaveBeenCalled()
+  })
+
+  it('wires the config cooldown through via the override (0 = trigger now)', async () => {
+    const result = await detectResetAndTrigger(snapshot([model({ modelId: 'gemini-3-flash' })]), 0)
+    expect(result.triggered).toBe(true)
+    expect(result.triggeredModels).toEqual(['gemini-3-flash'])
+    expect(executeTrigger).toHaveBeenCalledTimes(1)
+    expect(updateResetState).toHaveBeenCalledWith('gemini-3-flash', expect.any(String))
   })
 })

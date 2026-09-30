@@ -85,8 +85,14 @@ function getAllValidAccounts(): string[] {
  * 1. Check ALL models in the quota snapshot
  * 2. Find models that are "unused" (100% + ~5h reset)
  * 3. Trigger for ALL valid accounts
+ *
+ * NOTE (GUI addition): upstream hardcodes the 1h cooldown below and ignores
+ * `WakeupConfig.resetCooldownMinutes`, leaving that config field dead. The
+ * optional `cooldownMs` override wires it through without changing default
+ * behavior — the Task 5 backend should pass `config.resetCooldownMinutes *
+ * 60_000`; the default preserves upstream 1h semantics.
  */
-export async function detectResetAndTrigger(snapshot: QuotaSnapshot): Promise<DetectionResult> {
+export async function detectResetAndTrigger(snapshot: QuotaSnapshot, cooldownMs: number = DEFAULT_COOLDOWN_MS): Promise<DetectionResult> {
   debug('reset-detector', 'Checking for unused models (smart trigger)')
 
   // Load config
@@ -124,7 +130,7 @@ export async function detectResetAndTrigger(snapshot: QuotaSnapshot): Promise<De
     const previousState = resetState[model.modelId]
     if (previousState) {
       const lastTriggered = new Date(previousState.lastTriggeredTime).getTime()
-      const cooldownRemaining = DEFAULT_COOLDOWN_MS - (now - lastTriggered)
+      const cooldownRemaining = cooldownMs - (now - lastTriggered)
       if (cooldownRemaining > 0) {
         debug('reset-detector', `${model.modelId}: In cooldown (${Math.round(cooldownRemaining / 60000)}min remaining)`)
         continue
