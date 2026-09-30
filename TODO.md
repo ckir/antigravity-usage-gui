@@ -4,7 +4,7 @@ Outstanding items carried from implementation reviews. Checked items are done.
 
 ## Pre-release (must fix before publishing binaries)
 
-- [ ] Updater re-key: replace `REPLACE_OWNER` endpoint + dummy pubkey in `src-tauri/tauri.conf.json:43-47`, add signing private key as CI secret
+- [ ] Updater re-key: endpoint owner fixed (`ckir`); still to do: replace dummy pubkey in `src-tauri/tauri.conf.json:47`, add signing private key as CI secret
 - [ ] Node runtime decision: system Node ≥ 18 requirement vs pinned sidecar (`src-tauri/src/main.rs` documents the current assumption)
 - [ ] Full `tauri build` verification on Windows/macOS/Linux (CI matrix exists in `.github/workflows/ci.yml`; only `cargo check` run locally)
 

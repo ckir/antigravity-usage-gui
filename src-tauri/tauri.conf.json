@@ -41,7 +41,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/REPLACE_OWNER/antigravity-usage-gui/releases/latest/download/latest.json"
+        "https://github.com/ckir/antigravity-usage-gui/releases/latest/download/latest.json"
       ],
       "dialog": true,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU3MUE5M0RBQjY5QzlEN0MKUldSOG5aeTIycE1hVnlMNHY3dkZ0OFFORFlvdy9EYmdXT2Rxb0RCMXJiM2J3WWJaazYvL2xQZVUK"
