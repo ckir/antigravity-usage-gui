@@ -1,6 +1,9 @@
 /**
  * Backend method tests (Task 5). All cases run against an isolated config
- * dir (APPDATA/XDG_CONFIG_HOME pointed at a tmp dir) and touch no network:
+ * dir and touch no network. The config dir comes from APPDATA (Windows),
+ * XDG_CONFIG_HOME (Linux) or the home dir (macOS: ~/Library/Application
+ * Support, no env override), so all of those point at a tmp dir —
+ * `os.homedir()` reads HOME on POSIX and USERPROFILE on Windows.
  * quota paths are exercised through pre-seeded caches, scheduler install
  * paths are NOT covered here (they mutate real crontab/schtasks).
  */
@@ -33,8 +36,8 @@ import {
 } from './methods'
 
 let configRoot: string
-let savedAppData: string | undefined
-let savedXdg: string | undefined
+const ISOLATED_ENV = ['APPDATA', 'XDG_CONFIG_HOME', 'HOME', 'USERPROFILE'] as const
+let savedEnv: Partial<Record<(typeof ISOLATED_ENV)[number], string>>
 
 function snapshot(email: string, remainingPercentage: number): QuotaSnapshot {
   return {
@@ -53,20 +56,21 @@ function snapshot(email: string, remainingPercentage: number): QuotaSnapshot {
 }
 
 beforeEach(async () => {
-  savedAppData = process.env.APPDATA
-  savedXdg = process.env.XDG_CONFIG_HOME
   configRoot = await fs.mkdtemp(join(tmpdir(), 'ag-gui-test-'))
-  process.env.APPDATA = configRoot
-  process.env.XDG_CONFIG_HOME = configRoot
+  savedEnv = {}
+  for (const key of ISOLATED_ENV) {
+    savedEnv[key] = process.env[key]
+    process.env[key] = configRoot
+  }
   AccountManager.resetInstance()
   await fs.rm(join(tmpdir(), 'antigravity-gui-login.json'), { force: true })
 })
 
 afterEach(async () => {
-  if (savedAppData === undefined) delete process.env.APPDATA
-  else process.env.APPDATA = savedAppData
-  if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME
-  else process.env.XDG_CONFIG_HOME = savedXdg
+  for (const key of ISOLATED_ENV) {
+    if (savedEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = savedEnv[key]
+  }
   AccountManager.resetInstance()
   await fs.rm(join(tmpdir(), 'antigravity-gui-login.json'), { force: true })
   await fs.rm(configRoot, { recursive: true, force: true })
