@@ -38,6 +38,12 @@ use tauri_plugin_opener::OpenerExt;
 ///    builds must not fall back to the build machine's source tree — that
 ///    hid a broken bundle layout on the dev box.
 fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
+    backend_runner_in(app.path().resource_dir().ok())
+}
+
+/// [`backend_runner`] for a known resource dir (the headless trigger has no
+/// `AppHandle`).
+fn backend_runner_in(resource_dir: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("ANTIGRAVITY_BACKEND_RUNNER") {
         let p = PathBuf::from(p);
         if p.is_file() {
@@ -45,7 +51,7 @@ fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
         }
         return Err(format!("ANTIGRAVITY_BACKEND_RUNNER is not a file: {}", p.display()));
     }
-    if let Ok(dir) = app.path().resource_dir() {
+    if let Some(dir) = resource_dir {
         for candidate in [dir.join("runner.cjs"), dir.join("dist-backend/runner.cjs")] {
             if candidate.is_file() {
                 return Ok(candidate);
@@ -62,13 +68,13 @@ fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
     Err("backend runner not found: run `npm run build:backend` (dev) or reinstall the bundle".into())
 }
 
+/// Not plain `node`: Linux .deb bundles install `externalBin` into /usr/bin.
+const SIDECAR_NODE: &str = if cfg!(windows) { "agu-node.exe" } else { "agu-node" };
+
 /// Pick the node runtime for the runner:
 /// 1. `$ANTIGRAVITY_NODE` (explicit override),
 /// 2. the bundled `externalBin` sidecar (`agu-node`) next to the app executable,
 /// 3. `node` from `PATH` (only reached by builds missing the sidecar).
-/// Not plain `node`: Linux .deb bundles install `externalBin` into /usr/bin.
-const SIDECAR_NODE: &str = if cfg!(windows) { "agu-node.exe" } else { "agu-node" };
-
 fn resolve_node(env_override: Option<OsString>, exe_dir: Option<&Path>) -> PathBuf {
     if let Some(p) = env_override.filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
@@ -313,6 +319,49 @@ fn tray_tooltip(app: AppHandle, tooltip: String) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
+// Headless wakeup trigger
+// ---------------------------------------------------------------------------
+
+/// Runner args for `--wakeup-trigger [--cooldown-ms N]`, or `None` for a
+/// normal GUI launch. Cron uses this to re-launch an AppImage, whose node and
+/// runner live in a mount that only exists while the AppImage runs (see
+/// `scheduledCommand` in backend/methods.ts).
+fn wakeup_trigger_args(args: &[String]) -> Option<Vec<String>> {
+    if !args.iter().any(|a| a == "--wakeup-trigger") {
+        return None;
+    }
+    let mut runner_args = vec!["trigger".to_string(), "--scheduled".to_string()];
+    if let Some(i) = args.iter().position(|a| a == "--cooldown-ms") {
+        if let Some(ms) = args.get(i + 1) {
+            runner_args.extend(["--cooldown-ms".to_string(), ms.clone()]);
+        }
+    }
+    Some(runner_args)
+}
+
+/// Run the scheduled trigger without starting Tauri: cron has no display, so
+/// nothing here may touch GTK or the webview. Returns the exit code.
+fn run_wakeup_trigger(package_info: &tauri::PackageInfo, runner_args: &[String]) -> i32 {
+    let resource_dir =
+        tauri::utils::platform::resource_dir(package_info, &tauri::Env::default()).ok();
+    let runner = match backend_runner_in(resource_dir) {
+        Ok(runner) => runner,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
+    let node = node_binary();
+    match Command::new(&node).arg(&runner).args(runner_args).status() {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(e) => {
+            eprintln!("failed to spawn node backend ({}): {e}", node.display());
+            1
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -323,6 +372,12 @@ fn show_main_window(app: &AppHandle) {
 }
 
 fn main() {
+    let context = tauri::generate_context!();
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(runner_args) = wakeup_trigger_args(&args) {
+        std::process::exit(run_wakeup_trigger(context.package_info(), &runner_args));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -361,6 +416,21 @@ fn main() {
                 })
                 .build(app)?;
 
+            // AppImage: re-point the wakeup cron line if the .AppImage file
+            // moved since it was installed (`wakeupRepair`). Background and
+            // serialized like any IPC call; failure is non-fatal.
+            if std::env::var_os("APPIMAGE").is_some() {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let res: Result<serde_json::Value, String> = serialized(|| {
+                        call_backend_blocking(&handle, "wakeup_repair", serde_json::Value::Null)
+                    });
+                    if let Err(e) = res {
+                        eprintln!("wakeup cron repair failed (non-fatal): {e}");
+                    }
+                });
+            }
+
             // Autostart on login (best-effort: OS policy may refuse; the
             // error is logged, not fatal — the toggle remains available via
             // OS settings once enabled).
@@ -392,7 +462,7 @@ fn main() {
             wakeup_status,
             tray_tooltip
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("tauri failed");
 }
 
@@ -462,6 +532,34 @@ mod tests {
             t.join().unwrap();
         }
         assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn normal_launch_is_not_a_wakeup_trigger() {
+        assert_eq!(wakeup_trigger_args(&args(&["app"])), None);
+    }
+
+    #[test]
+    fn wakeup_trigger_maps_to_runner_args() {
+        assert_eq!(
+            wakeup_trigger_args(&args(&["app", "--wakeup-trigger", "--cooldown-ms", "600000"])),
+            Some(args(&["trigger", "--scheduled", "--cooldown-ms", "600000"]))
+        );
+        assert_eq!(
+            wakeup_trigger_args(&args(&["app", "--wakeup-trigger"])),
+            Some(args(&["trigger", "--scheduled"]))
+        );
+    }
+
+    #[test]
+    fn runner_is_found_in_the_given_resource_dir() {
+        let dir = scratch("runner");
+        std::fs::write(dir.join("runner.cjs"), b"").unwrap();
+        assert_eq!(backend_runner_in(Some(dir.clone())).unwrap(), dir.join("runner.cjs"));
     }
 
     #[test]

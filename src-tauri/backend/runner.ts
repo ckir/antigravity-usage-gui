@@ -38,6 +38,7 @@ import {
   wakeupTest,
   wakeupHistory,
   wakeupStatus,
+  wakeupRepair,
   scheduledTrigger,
 } from './methods'
 
@@ -69,6 +70,7 @@ const IPC_HANDLERS: Record<string, Handler> = {
     wakeupTest(a.email as string, a.model as string, a.prompt as string | undefined),
   wakeup_history: (a) => wakeupHistory(a.limit as number | undefined),
   wakeup_status: () => wakeupStatus(),
+  wakeup_repair: () => wakeupRepair(),
 };
 
 function parseArgs(raw: string | undefined): Record<string, never> {
