@@ -14,6 +14,7 @@ import {
   closeSync,
   fchmodSync,
   fsyncSync,
+  lstatSync,
   openSync,
   realpathSync,
   renameSync,
@@ -36,9 +37,16 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 }
 
-function isRetryable(err: unknown): boolean {
+/** Denied creating the temp file, though the target itself may be writable. */
+const PERMISSION = new Set(['EACCES', 'EPERM', 'EROFS'])
+
+function hasCode(err: unknown, codes: Set<string>): boolean {
   const code = (err as NodeJS.ErrnoException).code
-  return !!code && RETRYABLE_RENAME.has(code)
+  return !!code && codes.has(code)
+}
+
+function isRetryable(err: unknown): boolean {
+  return hasCode(err, RETRYABLE_RENAME)
 }
 
 function renameWithRetry(from: string, to: string): void {
@@ -58,11 +66,17 @@ function renameWithRetry(from: string, to: string): void {
  * dotfiles tool) is updated through the link like `writeFileSync` does,
  * instead of the rename replacing the link with a plain file.
  */
-function resolveTarget(path: string): string {
+function resolveTarget(path: string): string | null {
   try {
     return realpathSync(path)
   } catch {
-    return path // not there yet
+    try {
+      // A symlink that won't resolve (dangling, looping, inaccessible).
+      if (lstatSync(path).isSymbolicLink()) return null
+    } catch {
+      // not there yet
+    }
+    return path
   }
 }
 
@@ -80,9 +94,19 @@ function existingMode(path: string): number | undefined {
  * Replace `path` with `data` atomically. `mode` applies to the new file;
  * without it an existing file's permissions are kept (POSIX), else
  * 0o666 minus umask like `writeFileSync`. The parent directory must exist.
+ *
+ * Wherever the atomic path can't be used for a reason the old in-place
+ * write might survive (an unresolvable symlink, no permission to create a
+ * file next to the target, a rename blocked on Windows), it falls back to
+ * that in-place write, so a save never fails where it used to succeed.
  */
 export function writeFileAtomicSync(path: string, data: string, options: { mode?: number } = {}): void {
   const target = resolveTarget(path)
+  if (target === null) {
+    // Let writeFileSync follow the link as before, not replace it.
+    writeFileSync(path, data, { mode: options.mode })
+    return
+  }
   const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   const preserved = options.mode === undefined ? existingMode(target) : undefined
   const mode = options.mode ?? preserved ?? 0o666
@@ -101,6 +125,11 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
     }
   } catch (err) {
     removeQuietly(tmp)
+    // e.g. a read-only directory holding a writable (symlinked) file.
+    if (hasCode(err, PERMISSION)) {
+      writeFileSync(target, data, { mode })
+      return
+    }
     throw err
   }
   try {

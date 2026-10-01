@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  chmodSync,
   closeSync,
   lstatSync,
   mkdirSync,
@@ -76,6 +77,37 @@ describe('writeFileAtomicSync', () => {
     expect(readFileSync(real, 'utf8')).toBe('"new"')
     expect(readdirSync(dir).sort()).toEqual(['config.json', 'dotfiles-config.json'])
   })
+
+  it('follows a dangling symlink like writeFileSync instead of replacing it', (ctx) => {
+    const real = join(dir, 'not-yet.json')
+    const link = join(dir, 'config.json')
+    try {
+      symlinkSync(real, link, 'file')
+    } catch {
+      ctx.skip()
+    }
+    writeFileAtomicSync(link, '"new"')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readFileSync(real, 'utf8')).toBe('"new"')
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'still saves a writable file in a read-only directory',
+    () => {
+      const ro = join(dir, 'ro')
+      mkdirSync(ro)
+      const p = join(ro, 'config.json')
+      writeFileSync(p, '"old"')
+      chmodSync(ro, 0o555)
+      try {
+        writeFileAtomicSync(p, '"new"')
+        expect(readFileSync(p, 'utf8')).toBe('"new"')
+        expect(readdirSync(ro)).toEqual(['config.json'])
+      } finally {
+        chmodSync(ro, 0o755)
+      }
+    }
+  )
 
   it('still saves when another handle holds the file open', () => {
     // Windows cannot rename over an open file; the in-place fallback must
