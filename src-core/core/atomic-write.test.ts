@@ -109,6 +109,24 @@ describe('writeFileAtomicSync', () => {
     }
   )
 
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'applies an explicit mode when falling back to an in-place write',
+    () => {
+      const ro = join(dir, 'ro')
+      mkdirSync(ro)
+      const p = join(ro, 'tokens.json')
+      writeFileSync(p, '{}', { mode: 0o644 })
+      chmodSync(ro, 0o555)
+      try {
+        writeFileAtomicSync(p, '{"t":1}', { mode: 0o600 })
+        expect(statSync(p).mode & 0o777).toBe(0o600)
+        expect(readFileSync(p, 'utf8')).toBe('{"t":1}')
+      } finally {
+        chmodSync(ro, 0o755)
+      }
+    }
+  )
+
   it('still saves when another handle holds the file open', () => {
     // Windows cannot rename over an open file; the in-place fallback must
     // still land the new content (POSIX renames over it directly).

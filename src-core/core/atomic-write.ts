@@ -11,6 +11,7 @@
  * Concurrent writers still race: the last rename wins.
  */
 import {
+  chmodSync,
   closeSync,
   fchmodSync,
   fsyncSync,
@@ -104,14 +105,27 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
   const target = resolveTarget(path)
   if (target === null) {
     // Let writeFileSync follow the link as before, not replace it.
-    writeFileSync(path, data, { mode: options.mode })
+    writeInPlace(path, data, options.mode)
     return
   }
   const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   const preserved = options.mode === undefined ? existingMode(target) : undefined
   const mode = options.mode ?? preserved ?? 0o666
+  let fd: number
   try {
-    const fd = openSync(tmp, 'w', mode)
+    fd = openSync(tmp, 'w', mode)
+  } catch (err) {
+    // No permission to create a file next to the target (e.g. a writable
+    // symlinked file in a read-only directory): write in place as before.
+    // Only here: after a failed write to the temp file an in-place write
+    // could truncate the original, so those errors throw instead.
+    if (hasCode(err, PERMISSION)) {
+      writeInPlace(target, data, options.mode)
+      return
+    }
+    throw err
+  }
+  try {
     try {
       // umask may have stripped bits from the existing file's mode.
       if (preserved !== undefined) fchmodSync(fd, preserved)
@@ -125,11 +139,6 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
     }
   } catch (err) {
     removeQuietly(tmp)
-    // e.g. a read-only directory holding a writable (symlinked) file.
-    if (hasCode(err, PERMISSION)) {
-      writeFileSync(target, data, { mode })
-      return
-    }
     throw err
   }
   try {
@@ -141,11 +150,21 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
     // that handle does not block, so the save is never lost; atomicity is
     // given up only in this case.
     if (process.platform === 'win32' && isRetryable(err)) {
-      writeFileSync(target, data, { mode })
+      writeInPlace(target, data, options.mode)
       return
     }
     throw err
   }
+}
+
+/**
+ * The old non-atomic write, for the fallbacks. `writeFileSync` applies a mode
+ * only when it creates the file, so an explicit one (e.g. 0o600 for tokens)
+ * is set afterwards too (POSIX).
+ */
+function writeInPlace(path: string, data: string, mode: number | undefined): void {
+  writeFileSync(path, data, { mode })
+  if (mode !== undefined && process.platform !== 'win32') chmodSync(path, mode)
 }
 
 function removeQuietly(path: string): void {
