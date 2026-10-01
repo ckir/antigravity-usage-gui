@@ -34,6 +34,7 @@ import {
   scheduledTrigger,
   rewriteCronLines,
   planCronRepair,
+  cronQuote,
   scheduledCommand,
 } from './methods'
 
@@ -193,7 +194,21 @@ describe('wakeup backend (no scheduler mutation)', () => {
   })
 
   it('quotes the node path so install dirs with spaces survive /bin/sh', () => {
-    expect(scheduledCommand('runner.cjs', 1, {}).startsWith(`"${process.execPath}" "runner.cjs" `)).toBe(true)
+    expect(scheduledCommand('runner.cjs', 1, {}).startsWith(`'${process.execPath}' 'runner.cjs' `)).toBe(true)
+  })
+})
+
+describe('cronQuote', () => {
+  it('single-quotes so /bin/sh expands nothing', () => {
+    expect(cronQuote('/opt/My $HOME `id` "x"/app')).toBe("'/opt/My $HOME `id` \"x\"/app'")
+  })
+
+  it("writes a single quote as '\\''", () => {
+    expect(cronQuote("/opt/it's/app")).toBe("'/opt/it'\\''s/app'")
+  })
+
+  it('escapes % so cron does not turn it into a newline', () => {
+    expect(cronQuote('/opt/100%/app')).toBe("'/opt/100\\%/app'")
   })
 })
 
@@ -205,12 +220,12 @@ describe('AppImage cron line', () => {
 
   it('re-launches the AppImage file, not the transient mount', () => {
     expect(scheduledCommand('/tmp/.mount_abc/runner.cjs', 600_000, { APPIMAGE })).toBe(
-      `"${APPIMAGE}" --wakeup-trigger --cooldown-ms 600000`
+      `'${APPIMAGE}' --wakeup-trigger --cooldown-ms 600000`
     )
   })
 
   it('rewrites the vendored line and an already-rewritten one, leaving other lines alone', () => {
-    const cmd = `"${APPIMAGE}" --wakeup-trigger --cooldown-ms 600000`
+    const cmd = `'${APPIMAGE}' --wakeup-trigger --cooldown-ms 600000`
     const expected = crontab(cmd)
     expect(rewriteCronLines(crontab('antigravity-usage wakeup trigger --scheduled'), cmd)).toBe(expected)
     expect(rewriteCronLines(crontab(MOUNTED), cmd)).toBe(expected)
@@ -223,25 +238,25 @@ describe('AppImage cron line', () => {
 
   it('plans a repair that re-points the line and keeps the installed cooldown', () => {
     expect(planCronRepair(crontab(MOUNTED), 3_600_000, { APPIMAGE })).toBe(
-      crontab(`"${APPIMAGE}" --wakeup-trigger --cooldown-ms 600000`)
+      crontab(`'${APPIMAGE}' --wakeup-trigger --cooldown-ms 600000`)
     )
   })
 
   it('repairs a line for an AppImage that was moved', () => {
     const old = crontab('"/home/u/Downloads/app.AppImage" --wakeup-trigger --cooldown-ms 600000')
     expect(planCronRepair(old, 3_600_000, { APPIMAGE })).toBe(
-      crontab(`"${APPIMAGE}" --wakeup-trigger --cooldown-ms 600000`)
+      crontab(`'${APPIMAGE}' --wakeup-trigger --cooldown-ms 600000`)
     )
   })
 
   it('falls back to the default cooldown when the line carries none', () => {
     expect(planCronRepair(crontab('antigravity-usage wakeup trigger --scheduled'), 3_600_000, { APPIMAGE })).toBe(
-      crontab(`"${APPIMAGE}" --wakeup-trigger --cooldown-ms 3600000`)
+      crontab(`'${APPIMAGE}' --wakeup-trigger --cooldown-ms 3600000`)
     )
   })
 
   it('does nothing when already current, when not an AppImage, or with no marker line', () => {
-    expect(planCronRepair(crontab(`"${APPIMAGE}" --wakeup-trigger --cooldown-ms 600000`), 1, { APPIMAGE })).toBeNull()
+    expect(planCronRepair(crontab(`'${APPIMAGE}' --wakeup-trigger --cooldown-ms 600000`), 1, { APPIMAGE })).toBeNull()
     expect(planCronRepair(crontab(MOUNTED), 1, {})).toBeNull()
     expect(planCronRepair('0 9 * * * other-job\n', 1, { APPIMAGE })).toBeNull()
   })

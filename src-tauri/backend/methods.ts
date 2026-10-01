@@ -393,6 +393,16 @@ const WINDOWS_TASK_NAME = 'AntigravityWakeup'
 /** Marker comment on our cron line (same as src-core's CRON_COMMENT_MARKER). */
 const CRON_MARKER = 'antigravity-usage-wakeup'
 
+/**
+ * Quote a path for a crontab command: cron hands the line to /bin/sh, so
+ * single quotes stop `$`, backtick and `"` from being interpreted (a `'` is
+ * written as `'\''`), and cron itself turns an unescaped `%` into a newline
+ * even inside quotes, so it is written as `\%` (cron drops the backslash).
+ */
+export function cronQuote(path: string): string {
+  return `'${path.replace(/'/g, `'\\''`).replace(/%/g, '\\%')}'`
+}
+
 /** Runner invocation embedded in cron/schtasks, carrying the install payload. */
 export function scheduledCommand(
   runnerPath: string,
@@ -403,10 +413,10 @@ export function scheduledCommand(
   // when the app exits, taking node and the runner with it. Cron re-launches
   // the AppImage file itself instead: `--wakeup-trigger` is handled headless
   // in main.rs (no window, no display needed).
-  if (env.APPIMAGE) return `"${env.APPIMAGE}" --wakeup-trigger --cooldown-ms ${cooldownMs}`
+  if (env.APPIMAGE) return `${cronQuote(env.APPIMAGE)} --wakeup-trigger --cooldown-ms ${cooldownMs}`
   // Quote node too: the bundled sidecar lives under the install dir, which
-  // may contain spaces (cron runs this line through /bin/sh).
-  return `"${process.execPath}" "${runnerPath}" trigger --scheduled --cooldown-ms ${cooldownMs}`
+  // may contain spaces.
+  return `${cronQuote(process.execPath)} ${cronQuote(runnerPath)} trigger --scheduled --cooldown-ms ${cooldownMs}`
 }
 
 function isMarkerLine(line: string): boolean {
