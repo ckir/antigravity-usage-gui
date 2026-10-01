@@ -5,7 +5,8 @@
  * It routes to the active account in the new multi-account structure.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { writeFileAtomicSync } from '../core/atomic-write'
 import { dirname } from 'node:path'
 import { getTokensPath, getConfigDir, getAccountDir } from '../core/env'
 import { debug } from '../core/logger'
@@ -39,7 +40,7 @@ export function saveTokens(tokens: StoredTokens): void {
       mkdirSync(dir, { recursive: true })
     }
     
-    writeFileSync(path, JSON.stringify(tokens, null, 2), { mode: 0o600 })
+    writeFileAtomicSync(path, JSON.stringify(tokens, null, 2), { mode: 0o600 })
     return
   }
   

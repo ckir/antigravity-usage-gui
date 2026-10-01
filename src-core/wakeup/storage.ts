@@ -4,7 +4,8 @@
  */
 
 import { join } from 'path'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync } from 'fs'
+import { writeFileAtomicSync } from '../core/atomic-write'
 import { debug } from '../core/logger'
 import { getConfigDir } from '../core/env'
 import type {
@@ -66,7 +67,7 @@ function writeJsonFile<T>(filename: string, data: T): void {
   ensureWakeupDir()
   const filepath = join(getWakeupDir(), filename)
   try {
-    writeFileSync(filepath, JSON.stringify(data, null, 2), 'utf-8')
+    writeFileAtomicSync(filepath, JSON.stringify(data, null, 2))
     debug('wakeup-storage', `Wrote ${filename}`)
   } catch (err) {
     debug('wakeup-storage', `Error writing ${filename}:`, err)

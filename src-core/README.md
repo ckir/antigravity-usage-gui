@@ -30,6 +30,12 @@
   - Linux: `~/.config/antigravity-usage/`
   - Windows: `%APPDATA%/antigravity-usage/`
 
+- State files are written atomically (GUI-local, not upstream):
+  `core/atomic-write.ts` replaces `writeFileSync` in `accounts/storage.ts`,
+  `accounts/config.ts`, `google/storage.ts` and `wakeup/storage.ts`. The GUI,
+  the CLI and the scheduled trigger share these files concurrently, and a
+  truncate-then-write could be read half-written. Re-apply after a sync.
+
 ## Syncing upstream
 
 Re-copy the files above from the tagged upstream release, re-apply the import

@@ -2,7 +2,8 @@
  * Global configuration management
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, readFileSync, mkdirSync } from 'node:fs'
+import { writeFileAtomicSync } from '../core/atomic-write'
 import { dirname } from 'node:path'
 import { getGlobalConfigPath } from '../core/env'
 import { debug } from '../core/logger'
@@ -51,7 +52,7 @@ export function saveConfig(config: GlobalConfig): void {
   }
   
   debug('config', `Saving config to ${path}`)
-  writeFileSync(path, JSON.stringify(config, null, 2))
+  writeFileAtomicSync(path, JSON.stringify(config, null, 2))
 }
 
 /**
