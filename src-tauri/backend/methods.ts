@@ -258,6 +258,7 @@ export async function loginStart(manual: boolean, runnerPath: string): Promise<s
   const child = spawn(process.execPath, [runnerPath, 'login-wait'], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
   })
   child.unref()
   await fs.writeFile(
@@ -391,7 +392,9 @@ const WINDOWS_TASK_NAME = 'AntigravityWakeup'
 
 /** Runner invocation embedded in cron/schtasks, carrying the install payload. */
 export function scheduledCommand(runnerPath: string, cooldownMs: number): string {
-  return `${process.execPath} "${runnerPath}" trigger --scheduled --cooldown-ms ${cooldownMs}`
+  // Quote node too: the bundled sidecar lives under the install dir, which
+  // may contain spaces (cron runs this line through /bin/sh).
+  return `"${process.execPath}" "${runnerPath}" trigger --scheduled --cooldown-ms ${cooldownMs}`
 }
 
 export function wakeupConfig(): WakeupConfig | null {

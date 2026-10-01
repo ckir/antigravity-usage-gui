@@ -7,12 +7,15 @@
 //! spawned once per invoke with a single-line JSON envelope on stdout:
 //! `{ "ok": true, "result": … } | { "ok": false, "error": … }`.
 //!
-//! The sidecar needs a `node` runtime (>=18 per `engines`). Bundles ship the
-//! runner as a resource; if `node` is missing the handlers return a clear
-//! error instead of failing silently. Shipping a pinned node binary as a
-//! Tauri sidecar (so end users need no system node) is a follow-up.
+//! The runner is executed by a pinned node binary shipped as a Tauri
+//! `externalBin` (`src-tauri/binaries/agu-node-<triple>`, fetched by
+//! `scripts/fetch-node.mjs`), so end users need no system node. That matters
+//! beyond convenience: a node that only exists in fnm/nvm-initialised shells
+//! is invisible to an app launched from Explorer/Finder/autostart, and the
+//! wakeup scheduler bakes the runner's `process.execPath` into the OS task.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{
     image::Image,
@@ -29,8 +32,11 @@ use tauri_plugin_opener::OpenerExt;
 
 /// Locate the bundled backend runner:
 /// 1. `$ANTIGRAVITY_BACKEND_RUNNER` (dev override / tests),
-/// 2. the app resource dir (installed bundles — see `bundle.resources`),
-/// 3. `dist-backend/runner.cjs` next to the crate (dev via `tauri dev`).
+/// 2. the app resource dir (installed bundles — `bundle.resources` maps the
+///    runner to `<resources>/runner.cjs`),
+/// 3. debug builds only: `dist-backend/runner.cjs` next to the crate. Release
+///    builds must not fall back to the build machine's source tree — that
+///    hid a broken bundle layout on the dev box.
 fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("ANTIGRAVITY_BACKEND_RUNNER") {
         let p = PathBuf::from(p);
@@ -46,28 +52,66 @@ fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
             }
         }
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-backend/runner.cjs");
-    if dev.is_file() {
-        return Ok(dev);
+    #[cfg(debug_assertions)]
+    {
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-backend/runner.cjs");
+        if dev.is_file() {
+            return Ok(dev);
+        }
     }
     Err("backend runner not found: run `npm run build:backend` (dev) or reinstall the bundle".into())
 }
 
-/// Spawn `node <runner> <method> '<json-args>'` and decode the envelope.
-fn call_backend<T: serde::de::DeserializeOwned>(
+/// Pick the node runtime for the runner:
+/// 1. `$ANTIGRAVITY_NODE` (explicit override),
+/// 2. the bundled `externalBin` sidecar (`agu-node`) next to the app executable,
+/// 3. `node` from `PATH` (only reached by builds missing the sidecar).
+/// Not plain `node`: Linux .deb bundles install `externalBin` into /usr/bin.
+const SIDECAR_NODE: &str = if cfg!(windows) { "agu-node.exe" } else { "agu-node" };
+
+fn resolve_node(env_override: Option<OsString>, exe_dir: Option<&Path>) -> PathBuf {
+    if let Some(p) = env_override.filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    if let Some(dir) = exe_dir {
+        let sidecar = dir.join(SIDECAR_NODE);
+        if sidecar.is_file() {
+            return sidecar;
+        }
+    }
+    PathBuf::from("node")
+}
+
+fn node_binary() -> PathBuf {
+    let exe = std::env::current_exe().ok();
+    resolve_node(
+        std::env::var_os("ANTIGRAVITY_NODE"),
+        exe.as_deref().and_then(Path::parent),
+    )
+}
+
+/// Spawn `<node> <runner> <method> '<json-args>'` and decode the envelope.
+/// Blocks for the whole node run — call it via [`call_backend`].
+fn call_backend_blocking<T: serde::de::DeserializeOwned>(
     app: &AppHandle,
     method: &str,
     args: serde_json::Value,
 ) -> Result<T, String> {
     let runner = backend_runner(app)?;
-    let output = Command::new("node")
-        .arg(&runner)
-        .arg(method)
-        .arg(args.to_string())
-        .output()
-        .map_err(|e| {
-            format!("failed to spawn node backend (is node >=18 installed?): {e}")
-        })?;
+    let node = node_binary();
+    let mut cmd = Command::new(&node);
+    cmd.arg(&runner).arg(method).arg(args.to_string());
+    // node is a console program: without this, every invoke from the
+    // windows-subsystem release build flashes a console window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().map_err(|e| {
+        format!("failed to spawn node backend ({}): {e}", node.display())
+    })?;
     let line = String::from_utf8_lossy(&output.stdout)
         .lines()
         .rev()
@@ -93,13 +137,43 @@ fn call_backend<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// One backend process at a time. The runner mutates shared on-disk state
+/// without locking — `getAllQuotas` temporarily switches the active account
+/// in config.json and restores it — so overlapping processes can read the
+/// switched account (wrong quota on the dashboard) or "restore" the wrong one
+/// (active account changed for good). Sync commands used to be serialized
+/// implicitly by the main thread; this keeps that guarantee off it.
+static BACKEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serialized<R>(f: impl FnOnce() -> R) -> R {
+    // A panic while holding the lock leaves no state behind worth guarding.
+    let _guard = BACKEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
+/// Run [`call_backend_blocking`] on the blocking thread pool, serialized.
+/// Handlers are `async` so Tauri doesn't run them on the main (window)
+/// thread: a sync command there freezes the UI for the full node round-trip.
+async fn call_backend<T: serde::de::DeserializeOwned + Send + 'static>(
+    app: &AppHandle,
+    method: &'static str,
+    args: serde_json::Value,
+) -> Result<T, String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        serialized(|| call_backend_blocking(&app, method, args))
+    })
+    .await
+    .map_err(|e| format!("backend {method} task failed: {e}"))?
+}
+
 // ---------------------------------------------------------------------------
 // IPC handlers — full list (Tasks 2-4 surface + Task 5 tray).
 // JS arg names are camelCase; Tauri maps them to the snake_case params.
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn get_quota(
+async fn get_quota(
     app: AppHandle,
     method: Option<String>,
     account: Option<String>,
@@ -110,47 +184,47 @@ fn get_quota(
         &app,
         "get_quota",
         serde_json::json!({ "method": method, "account": account, "refresh": refresh, "allModels": all_models }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn get_all_quotas(app: AppHandle, refresh: Option<bool>) -> Result<serde_json::Value, String> {
-    call_backend(&app, "get_all_quotas", serde_json::json!({ "refresh": refresh }))
+async fn get_all_quotas(app: AppHandle, refresh: Option<bool>) -> Result<serde_json::Value, String> {
+    call_backend(&app, "get_all_quotas", serde_json::json!({ "refresh": refresh })).await
 }
 
 #[tauri::command]
-fn accounts_list(app: AppHandle) -> Result<Vec<String>, String> {
-    call_backend(&app, "accounts_list", serde_json::Value::Null)
+async fn accounts_list(app: AppHandle) -> Result<Vec<String>, String> {
+    call_backend(&app, "accounts_list", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn accounts_current(app: AppHandle) -> Result<Option<String>, String> {
-    call_backend(&app, "accounts_current", serde_json::Value::Null)
+async fn accounts_current(app: AppHandle) -> Result<Option<String>, String> {
+    call_backend(&app, "accounts_current", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn accounts_switch(app: AppHandle, email: String) -> Result<(), String> {
+async fn accounts_switch(app: AppHandle, email: String) -> Result<(), String> {
     let _: serde_json::Value =
-        call_backend(&app, "accounts_switch", serde_json::json!({ "email": email }))?;
+        call_backend(&app, "accounts_switch", serde_json::json!({ "email": email })).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn accounts_remove(app: AppHandle, email: String) -> Result<(), String> {
+async fn accounts_remove(app: AppHandle, email: String) -> Result<(), String> {
     let _: serde_json::Value =
-        call_backend(&app, "accounts_remove", serde_json::json!({ "email": email }))?;
+        call_backend(&app, "accounts_remove", serde_json::json!({ "email": email })).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn accounts_refresh(app: AppHandle, email: Option<String>) -> Result<Vec<String>, String> {
-    call_backend(&app, "accounts_refresh", serde_json::json!({ "email": email }))
+async fn accounts_refresh(app: AppHandle, email: Option<String>) -> Result<Vec<String>, String> {
+    call_backend(&app, "accounts_refresh", serde_json::json!({ "email": email })).await
 }
 
 /// Complete a manual (paste-URL) login against staged `login_start` state.
 #[tauri::command]
-fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
-    call_backend(&app, "accounts_add", serde_json::json!({ "manualUrl": manual_url }))
+async fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
+    call_backend(&app, "accounts_add", serde_json::json!({ "manualUrl": manual_url })).await
 }
 
 /// Start a login and return the Google OAuth URL. Auto mode also opens the
@@ -158,9 +232,9 @@ fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
 /// by a detached sidecar (`login-wait`). Manual mode only stages state for
 /// the paste-URL dialog (`accounts_add`).
 #[tauri::command]
-fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
+async fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
     let manual = manual.unwrap_or(false);
-    let url: String = call_backend(&app, "login_start", serde_json::json!({ "manual": manual }))?;
+    let url: String = call_backend(&app, "login_start", serde_json::json!({ "manual": manual })).await?;
     if !manual {
         app.opener()
             .open_url(&url, None::<&str>)
@@ -170,22 +244,22 @@ fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn login_cancel(app: AppHandle) -> Result<bool, String> {
-    call_backend(&app, "login_cancel", serde_json::Value::Null)
+async fn login_cancel(app: AppHandle) -> Result<bool, String> {
+    call_backend(&app, "login_cancel", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn doctor(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "doctor", serde_json::Value::Null)
+async fn doctor(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "doctor", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn wakeup_config(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_config", serde_json::Value::Null)
+async fn wakeup_config(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_config", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn wakeup_install(
+async fn wakeup_install(
     app: AppHandle,
     config: serde_json::Value,
     cooldown_ms: Option<u64>,
@@ -194,18 +268,18 @@ fn wakeup_install(
         &app,
         "wakeup_install",
         serde_json::json!({ "config": config, "cooldownMs": cooldown_ms }),
-    )?;
+    ).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn wakeup_uninstall(app: AppHandle) -> Result<(), String> {
-    let _: serde_json::Value = call_backend(&app, "wakeup_uninstall", serde_json::Value::Null)?;
+async fn wakeup_uninstall(app: AppHandle) -> Result<(), String> {
+    let _: serde_json::Value = call_backend(&app, "wakeup_uninstall", serde_json::Value::Null).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn wakeup_test(
+async fn wakeup_test(
     app: AppHandle,
     email: String,
     model: String,
@@ -215,17 +289,17 @@ fn wakeup_test(
         &app,
         "wakeup_test",
         serde_json::json!({ "email": email, "model": model, "prompt": prompt }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn wakeup_history(app: AppHandle, limit: Option<u64>) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_history", serde_json::json!({ "limit": limit }))
+async fn wakeup_history(app: AppHandle, limit: Option<u64>) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_history", serde_json::json!({ "limit": limit })).await
 }
 
 #[tauri::command]
-fn wakeup_status(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_status", serde_json::Value::Null)
+async fn wakeup_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_status", serde_json::Value::Null).await
 }
 
 /// Live-update the tray tooltip (driven by `TrayMenu.setTrayTooltip`).
@@ -320,4 +394,80 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("tauri failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agu-resolve-node-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sidecar_name() -> &'static str {
+        SIDECAR_NODE
+    }
+
+    #[test]
+    fn env_override_wins_over_sidecar() {
+        let dir = scratch("override");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        let got = resolve_node(Some(OsString::from("C:/custom/node.exe")), Some(&dir));
+        assert_eq!(got, PathBuf::from("C:/custom/node.exe"));
+    }
+
+    #[test]
+    fn empty_env_override_is_ignored() {
+        let dir = scratch("empty");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        assert_eq!(resolve_node(Some(OsString::new()), Some(&dir)), dir.join(sidecar_name()));
+    }
+
+    #[test]
+    fn sidecar_next_to_exe_is_used() {
+        let dir = scratch("sidecar");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        assert_eq!(resolve_node(None, Some(&dir)), dir.join(sidecar_name()));
+    }
+
+    #[test]
+    fn backend_calls_never_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::sync::Barrier;
+        const N: usize = 8;
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        // Release all threads at once so they contend for the lock; without
+        // this they could run back-to-back and pass with the lock removed.
+        let start = Arc::new(Barrier::new(N));
+        let threads: Vec<_> = (0..N)
+            .map(|_| {
+                let (running, peak, start) = (running.clone(), peak.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    serialized(|| {
+                        let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        running.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn falls_back_to_path_node_without_sidecar() {
+        let dir = scratch("none");
+        assert_eq!(resolve_node(None, Some(&dir)), PathBuf::from("node"));
+        assert_eq!(resolve_node(None, None), PathBuf::from("node"));
+    }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { startLogin, cancelLogin, completeManualLogin } from '../../src-tauri/commands/accounts'
+import { errorMessage } from '../errorMessage'
 
 export interface LoginDialogProps {
   /** true: show manual copy-paste flow; false: auto system-browser flow. */
@@ -30,7 +31,7 @@ export default function LoginDialog({ manual, onClose, onSuccess }: LoginDialogP
         if (!cancelled && manual) setAuthUrl(url)
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to start login')
+        if (!cancelled) setError(errorMessage(e, 'Failed to start login'))
       })
       .finally(() => {
         if (!cancelled) setPending(false)
@@ -57,7 +58,7 @@ export default function LoginDialog({ manual, onClose, onSuccess }: LoginDialogP
         onClose()
       })
       .catch((e) => {
-        setError(e instanceof Error ? e.message : 'Manual login failed')
+        setError(errorMessage(e, 'Manual login failed'))
       })
       .finally(() => {
         setPending(false)
