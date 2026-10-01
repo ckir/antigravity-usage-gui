@@ -137,18 +137,34 @@ fn call_backend_blocking<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Run [`call_backend_blocking`] on the blocking thread pool. Handlers are
-/// `async` so Tauri doesn't run them on the main (window) thread: a sync
-/// command there freezes the UI for the full node round-trip.
+/// One backend process at a time. The runner mutates shared on-disk state
+/// without locking — `getAllQuotas` temporarily switches the active account
+/// in config.json and restores it — so overlapping processes can read the
+/// switched account (wrong quota on the dashboard) or "restore" the wrong one
+/// (active account changed for good). Sync commands used to be serialized
+/// implicitly by the main thread; this keeps that guarantee off it.
+static BACKEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serialized<R>(f: impl FnOnce() -> R) -> R {
+    // A panic while holding the lock leaves no state behind worth guarding.
+    let _guard = BACKEND_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
+/// Run [`call_backend_blocking`] on the blocking thread pool, serialized.
+/// Handlers are `async` so Tauri doesn't run them on the main (window)
+/// thread: a sync command there freezes the UI for the full node round-trip.
 async fn call_backend<T: serde::de::DeserializeOwned + Send + 'static>(
     app: &AppHandle,
     method: &'static str,
     args: serde_json::Value,
 ) -> Result<T, String> {
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || call_backend_blocking(&app, method, args))
-        .await
-        .map_err(|e| format!("backend {method} task failed: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        serialized(|| call_backend_blocking(&app, method, args))
+    })
+    .await
+    .map_err(|e| format!("backend {method} task failed: {e}"))?
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +431,31 @@ mod tests {
         let dir = scratch("sidecar");
         std::fs::write(dir.join(sidecar_name()), b"").unwrap();
         assert_eq!(resolve_node(None, Some(&dir)), dir.join(sidecar_name()));
+    }
+
+    #[test]
+    fn backend_calls_never_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let running = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (running, peak) = (running.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    serialized(|| {
+                        let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        running.fetch_sub(1, Ordering::SeqCst);
+                    })
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(peak.load(Ordering::SeqCst), 1);
     }
 
     #[test]
