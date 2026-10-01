@@ -19,6 +19,14 @@ jobs:
           node-version: 20
           cache: npm
       - uses: dtolnay/rust-toolchain@stable
+      # `cargo check` below compiles the webkit/gtk -sys crates, which need
+      # the system dev packages (same list as the build job).
+      - name: Install Linux Tauri deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file \
+            libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
       - run: npm ci
       - run: npm test
       - run: npm run frontend:build
