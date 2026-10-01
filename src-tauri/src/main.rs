@@ -437,12 +437,18 @@ mod tests {
     fn backend_calls_never_overlap() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::Barrier;
+        const N: usize = 8;
         let running = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
-        let threads: Vec<_> = (0..8)
+        // Release all threads at once so they contend for the lock; without
+        // this they could run back-to-back and pass with the lock removed.
+        let start = Arc::new(Barrier::new(N));
+        let threads: Vec<_> = (0..N)
             .map(|_| {
-                let (running, peak) = (running.clone(), peak.clone());
+                let (running, peak, start) = (running.clone(), peak.clone(), start.clone());
                 std::thread::spawn(move || {
+                    start.wait();
                     serialized(|| {
                         let now = running.fetch_add(1, Ordering::SeqCst) + 1;
                         peak.fetch_max(now, Ordering::SeqCst);
