@@ -91,7 +91,8 @@ fn node_binary() -> PathBuf {
 }
 
 /// Spawn `<node> <runner> <method> '<json-args>'` and decode the envelope.
-fn call_backend<T: serde::de::DeserializeOwned>(
+/// Blocks for the whole node run — call it via [`call_backend`].
+fn call_backend_blocking<T: serde::de::DeserializeOwned>(
     app: &AppHandle,
     method: &str,
     args: serde_json::Value,
@@ -136,13 +137,27 @@ fn call_backend<T: serde::de::DeserializeOwned>(
     }
 }
 
+/// Run [`call_backend_blocking`] on the blocking thread pool. Handlers are
+/// `async` so Tauri doesn't run them on the main (window) thread: a sync
+/// command there freezes the UI for the full node round-trip.
+async fn call_backend<T: serde::de::DeserializeOwned + Send + 'static>(
+    app: &AppHandle,
+    method: &'static str,
+    args: serde_json::Value,
+) -> Result<T, String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || call_backend_blocking(&app, method, args))
+        .await
+        .map_err(|e| format!("backend {method} task failed: {e}"))?
+}
+
 // ---------------------------------------------------------------------------
 // IPC handlers — full list (Tasks 2-4 surface + Task 5 tray).
 // JS arg names are camelCase; Tauri maps them to the snake_case params.
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-fn get_quota(
+async fn get_quota(
     app: AppHandle,
     method: Option<String>,
     account: Option<String>,
@@ -153,47 +168,47 @@ fn get_quota(
         &app,
         "get_quota",
         serde_json::json!({ "method": method, "account": account, "refresh": refresh, "allModels": all_models }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn get_all_quotas(app: AppHandle, refresh: Option<bool>) -> Result<serde_json::Value, String> {
-    call_backend(&app, "get_all_quotas", serde_json::json!({ "refresh": refresh }))
+async fn get_all_quotas(app: AppHandle, refresh: Option<bool>) -> Result<serde_json::Value, String> {
+    call_backend(&app, "get_all_quotas", serde_json::json!({ "refresh": refresh })).await
 }
 
 #[tauri::command]
-fn accounts_list(app: AppHandle) -> Result<Vec<String>, String> {
-    call_backend(&app, "accounts_list", serde_json::Value::Null)
+async fn accounts_list(app: AppHandle) -> Result<Vec<String>, String> {
+    call_backend(&app, "accounts_list", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn accounts_current(app: AppHandle) -> Result<Option<String>, String> {
-    call_backend(&app, "accounts_current", serde_json::Value::Null)
+async fn accounts_current(app: AppHandle) -> Result<Option<String>, String> {
+    call_backend(&app, "accounts_current", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn accounts_switch(app: AppHandle, email: String) -> Result<(), String> {
+async fn accounts_switch(app: AppHandle, email: String) -> Result<(), String> {
     let _: serde_json::Value =
-        call_backend(&app, "accounts_switch", serde_json::json!({ "email": email }))?;
+        call_backend(&app, "accounts_switch", serde_json::json!({ "email": email })).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn accounts_remove(app: AppHandle, email: String) -> Result<(), String> {
+async fn accounts_remove(app: AppHandle, email: String) -> Result<(), String> {
     let _: serde_json::Value =
-        call_backend(&app, "accounts_remove", serde_json::json!({ "email": email }))?;
+        call_backend(&app, "accounts_remove", serde_json::json!({ "email": email })).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn accounts_refresh(app: AppHandle, email: Option<String>) -> Result<Vec<String>, String> {
-    call_backend(&app, "accounts_refresh", serde_json::json!({ "email": email }))
+async fn accounts_refresh(app: AppHandle, email: Option<String>) -> Result<Vec<String>, String> {
+    call_backend(&app, "accounts_refresh", serde_json::json!({ "email": email })).await
 }
 
 /// Complete a manual (paste-URL) login against staged `login_start` state.
 #[tauri::command]
-fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
-    call_backend(&app, "accounts_add", serde_json::json!({ "manualUrl": manual_url }))
+async fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
+    call_backend(&app, "accounts_add", serde_json::json!({ "manualUrl": manual_url })).await
 }
 
 /// Start a login and return the Google OAuth URL. Auto mode also opens the
@@ -201,9 +216,9 @@ fn accounts_add(app: AppHandle, manual_url: String) -> Result<String, String> {
 /// by a detached sidecar (`login-wait`). Manual mode only stages state for
 /// the paste-URL dialog (`accounts_add`).
 #[tauri::command]
-fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
+async fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
     let manual = manual.unwrap_or(false);
-    let url: String = call_backend(&app, "login_start", serde_json::json!({ "manual": manual }))?;
+    let url: String = call_backend(&app, "login_start", serde_json::json!({ "manual": manual })).await?;
     if !manual {
         app.opener()
             .open_url(&url, None::<&str>)
@@ -213,22 +228,22 @@ fn login_start(app: AppHandle, manual: Option<bool>) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn login_cancel(app: AppHandle) -> Result<bool, String> {
-    call_backend(&app, "login_cancel", serde_json::Value::Null)
+async fn login_cancel(app: AppHandle) -> Result<bool, String> {
+    call_backend(&app, "login_cancel", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn doctor(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "doctor", serde_json::Value::Null)
+async fn doctor(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "doctor", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn wakeup_config(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_config", serde_json::Value::Null)
+async fn wakeup_config(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_config", serde_json::Value::Null).await
 }
 
 #[tauri::command]
-fn wakeup_install(
+async fn wakeup_install(
     app: AppHandle,
     config: serde_json::Value,
     cooldown_ms: Option<u64>,
@@ -237,18 +252,18 @@ fn wakeup_install(
         &app,
         "wakeup_install",
         serde_json::json!({ "config": config, "cooldownMs": cooldown_ms }),
-    )?;
+    ).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn wakeup_uninstall(app: AppHandle) -> Result<(), String> {
-    let _: serde_json::Value = call_backend(&app, "wakeup_uninstall", serde_json::Value::Null)?;
+async fn wakeup_uninstall(app: AppHandle) -> Result<(), String> {
+    let _: serde_json::Value = call_backend(&app, "wakeup_uninstall", serde_json::Value::Null).await?;
     Ok(())
 }
 
 #[tauri::command]
-fn wakeup_test(
+async fn wakeup_test(
     app: AppHandle,
     email: String,
     model: String,
@@ -258,17 +273,17 @@ fn wakeup_test(
         &app,
         "wakeup_test",
         serde_json::json!({ "email": email, "model": model, "prompt": prompt }),
-    )
+    ).await
 }
 
 #[tauri::command]
-fn wakeup_history(app: AppHandle, limit: Option<u64>) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_history", serde_json::json!({ "limit": limit }))
+async fn wakeup_history(app: AppHandle, limit: Option<u64>) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_history", serde_json::json!({ "limit": limit })).await
 }
 
 #[tauri::command]
-fn wakeup_status(app: AppHandle) -> Result<serde_json::Value, String> {
-    call_backend(&app, "wakeup_status", serde_json::Value::Null)
+async fn wakeup_status(app: AppHandle) -> Result<serde_json::Value, String> {
+    call_backend(&app, "wakeup_status", serde_json::Value::Null).await
 }
 
 /// Live-update the tray tooltip (driven by `TrayMenu.setTrayTooltip`).
