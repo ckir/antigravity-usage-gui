@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "npm run frontend:dev",
+    "beforeDevCommand": "npm run build:backend && npm run frontend:dev",
     "beforeBuildCommand": "npm run build:backend && npm run frontend:build"
   },
   "app": {
@@ -35,7 +35,8 @@
     "category": "Utility",
     "shortDescription": "Antigravity usage dashboard",
     "longDescription": "Tauri + React GUI for antigravity-usage with full CLI parity.",
-    "resources": ["../dist-backend/runner.cjs"]
+    "externalBin": ["binaries/node"],
+    "resources": { "../dist-backend/runner.cjs": "runner.cjs" }
   },
   "plugins": {
     "updater": {

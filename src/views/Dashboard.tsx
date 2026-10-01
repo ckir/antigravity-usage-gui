@@ -6,6 +6,7 @@ import { buildTrayTooltip, setTrayTooltip } from '../components/TrayMenu'
 import { getAllQuotas } from '../../src-tauri/commands/quota'
 import QuotaCard from '../components/QuotaCard'
 import AccountsTable from '../components/AccountsTable'
+import { errorMessage } from '../errorMessage'
 
 export default function Dashboard() {
   const [allModels, setAllModels] = useState(false)
@@ -80,7 +81,7 @@ export default function Dashboard() {
       {quota.isLoading && <p data-testid="dashboard-loading">Loading quota…</p>}
       {quota.isError && (
         <p data-testid="dashboard-error">
-          {quota.error instanceof Error ? quota.error.message : 'Failed to load quota'}
+          {errorMessage(quota.error, 'Failed to load quota')}
         </p>
       )}
 
@@ -107,7 +108,9 @@ export default function Dashboard() {
         <h2>All accounts</h2>
         {allAccounts.data && <AccountsTable results={allAccounts.data} />}
         {allAccounts.isError && (
-          <p data-testid="all-accounts-error">Failed to load all accounts</p>
+          <p data-testid="all-accounts-error">
+            {errorMessage(allAccounts.error, 'Failed to load all accounts')}
+          </p>
         )}
       </section>
     </main>

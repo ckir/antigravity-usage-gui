@@ -7,12 +7,15 @@
 //! spawned once per invoke with a single-line JSON envelope on stdout:
 //! `{ "ok": true, "result": … } | { "ok": false, "error": … }`.
 //!
-//! The sidecar needs a `node` runtime (>=18 per `engines`). Bundles ship the
-//! runner as a resource; if `node` is missing the handlers return a clear
-//! error instead of failing silently. Shipping a pinned node binary as a
-//! Tauri sidecar (so end users need no system node) is a follow-up.
+//! The runner is executed by a pinned node binary shipped as a Tauri
+//! `externalBin` (`src-tauri/binaries/node-<triple>`, fetched by
+//! `scripts/fetch-node.mjs`), so end users need no system node. That matters
+//! beyond convenience: a node that only exists in fnm/nvm-initialised shells
+//! is invisible to an app launched from Explorer/Finder/autostart, and the
+//! wakeup scheduler bakes the runner's `process.execPath` into the OS task.
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{
     image::Image,
@@ -29,8 +32,11 @@ use tauri_plugin_opener::OpenerExt;
 
 /// Locate the bundled backend runner:
 /// 1. `$ANTIGRAVITY_BACKEND_RUNNER` (dev override / tests),
-/// 2. the app resource dir (installed bundles — see `bundle.resources`),
-/// 3. `dist-backend/runner.cjs` next to the crate (dev via `tauri dev`).
+/// 2. the app resource dir (installed bundles — `bundle.resources` maps the
+///    runner to `<resources>/runner.cjs`),
+/// 3. debug builds only: `dist-backend/runner.cjs` next to the crate. Release
+///    builds must not fall back to the build machine's source tree — that
+///    hid a broken bundle layout on the dev box.
 fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("ANTIGRAVITY_BACKEND_RUNNER") {
         let p = PathBuf::from(p);
@@ -46,28 +52,62 @@ fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
             }
         }
     }
-    let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-backend/runner.cjs");
-    if dev.is_file() {
-        return Ok(dev);
+    #[cfg(debug_assertions)]
+    {
+        let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist-backend/runner.cjs");
+        if dev.is_file() {
+            return Ok(dev);
+        }
     }
     Err("backend runner not found: run `npm run build:backend` (dev) or reinstall the bundle".into())
 }
 
-/// Spawn `node <runner> <method> '<json-args>'` and decode the envelope.
+/// Pick the node runtime for the runner:
+/// 1. `$ANTIGRAVITY_NODE` (explicit override),
+/// 2. the bundled `externalBin` sidecar next to the app executable,
+/// 3. `node` from `PATH` (only reached by builds missing the sidecar).
+fn resolve_node(env_override: Option<OsString>, exe_dir: Option<&Path>) -> PathBuf {
+    if let Some(p) = env_override.filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    if let Some(dir) = exe_dir {
+        let sidecar = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+        if sidecar.is_file() {
+            return sidecar;
+        }
+    }
+    PathBuf::from("node")
+}
+
+fn node_binary() -> PathBuf {
+    let exe = std::env::current_exe().ok();
+    resolve_node(
+        std::env::var_os("ANTIGRAVITY_NODE"),
+        exe.as_deref().and_then(Path::parent),
+    )
+}
+
+/// Spawn `<node> <runner> <method> '<json-args>'` and decode the envelope.
 fn call_backend<T: serde::de::DeserializeOwned>(
     app: &AppHandle,
     method: &str,
     args: serde_json::Value,
 ) -> Result<T, String> {
     let runner = backend_runner(app)?;
-    let output = Command::new("node")
-        .arg(&runner)
-        .arg(method)
-        .arg(args.to_string())
-        .output()
-        .map_err(|e| {
-            format!("failed to spawn node backend (is node >=18 installed?): {e}")
-        })?;
+    let node = node_binary();
+    let mut cmd = Command::new(&node);
+    cmd.arg(&runner).arg(method).arg(args.to_string());
+    // node is a console program: without this, every invoke from the
+    // windows-subsystem release build flashes a console window.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output = cmd.output().map_err(|e| {
+        format!("failed to spawn node backend ({}): {e}", node.display())
+    })?;
     let line = String::from_utf8_lossy(&output.stdout)
         .lines()
         .rev()
@@ -320,4 +360,49 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("tauri failed");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("agu-resolve-node-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sidecar_name() -> &'static str {
+        if cfg!(windows) { "node.exe" } else { "node" }
+    }
+
+    #[test]
+    fn env_override_wins_over_sidecar() {
+        let dir = scratch("override");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        let got = resolve_node(Some(OsString::from("C:/custom/node.exe")), Some(&dir));
+        assert_eq!(got, PathBuf::from("C:/custom/node.exe"));
+    }
+
+    #[test]
+    fn empty_env_override_is_ignored() {
+        let dir = scratch("empty");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        assert_eq!(resolve_node(Some(OsString::new()), Some(&dir)), dir.join(sidecar_name()));
+    }
+
+    #[test]
+    fn sidecar_next_to_exe_is_used() {
+        let dir = scratch("sidecar");
+        std::fs::write(dir.join(sidecar_name()), b"").unwrap();
+        assert_eq!(resolve_node(None, Some(&dir)), dir.join(sidecar_name()));
+    }
+
+    #[test]
+    fn falls_back_to_path_node_without_sidecar() {
+        let dir = scratch("none");
+        assert_eq!(resolve_node(None, Some(&dir)), PathBuf::from("node"));
+        assert_eq!(resolve_node(None, None), PathBuf::from("node"));
+    }
 }

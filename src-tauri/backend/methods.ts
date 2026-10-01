@@ -258,6 +258,7 @@ export async function loginStart(manual: boolean, runnerPath: string): Promise<s
   const child = spawn(process.execPath, [runnerPath, 'login-wait'], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
   })
   child.unref()
   await fs.writeFile(

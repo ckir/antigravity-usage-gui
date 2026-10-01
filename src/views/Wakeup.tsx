@@ -11,6 +11,7 @@ import {
   getWakeupStatus,
   getWakeupHistory,
 } from '../../src-tauri/commands/wakeup'
+import { errorMessage } from '../errorMessage'
 
 /** 5-minute stale time matching the CLI quota cache (Global Constraints). */
 export const WAKEUP_STALE_MS = 5 * 60 * 1000
@@ -108,7 +109,7 @@ export default function Wakeup() {
     void queryClient.invalidateQueries({ queryKey: wakeupHistoryKey })
   }
   const onError = (e: unknown): void => {
-    setActionError(e instanceof Error ? e.message : 'Wakeup action failed')
+    setActionError(errorMessage(e, 'Wakeup action failed'))
   }
 
   const installMutation = useMutation({ mutationFn: installWakeup, onSettled: invalidate, onError })

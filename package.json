@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "npm run build:backend && tsc --noEmit && vite build && tauri build",
-    "build:backend": "node scripts/build-backend.mjs",
+    "build:backend": "node scripts/build-backend.mjs && node scripts/fetch-node.mjs",
     "test": "vitest run",
     "frontend:dev": "vite",
     "frontend:build": "tsc --noEmit && vite build"

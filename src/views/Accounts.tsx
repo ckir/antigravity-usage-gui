@@ -8,6 +8,7 @@ import {
   refreshAccount,
 } from '../../src-tauri/commands/accounts'
 import LoginDialog from '../components/LoginDialog'
+import { errorMessage } from '../errorMessage'
 
 /** 5-minute stale time matching the CLI quota cache (Global Constraints). */
 export const ACCOUNTS_STALE_MS = 5 * 60 * 1000
@@ -30,7 +31,7 @@ export default function Accounts() {
     void queryClient.invalidateQueries({ queryKey: activeAccountKey })
   }
   const onError = (e: unknown): void => {
-    setActionError(e instanceof Error ? e.message : 'Account action failed')
+    setActionError(errorMessage(e, 'Account action failed'))
   }
 
   const switchMutation = useMutation({ mutationFn: switchAccount, onSettled: invalidate, onError })
