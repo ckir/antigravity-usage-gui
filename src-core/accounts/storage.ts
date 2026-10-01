@@ -2,7 +2,8 @@
  * Account storage - file-based operations for multi-account
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { writeFileAtomicSync } from '../core/atomic-write'
 import { join } from 'node:path'
 import { getAccountsDir, getAccountDir } from '../core/env'
 import { debug } from '../core/logger'
@@ -83,7 +84,7 @@ export function saveAccountTokens(email: string, tokens: StoredTokens): void {
   const path = join(getAccountDir(email), 'tokens.json')
   
   debug('accounts-storage', `Saving tokens for ${email}`)
-  writeFileSync(path, JSON.stringify(tokens, null, 2), { mode: 0o600 })
+  writeFileAtomicSync(path, JSON.stringify(tokens, null, 2), { mode: 0o600 })
 }
 
 /**
@@ -118,7 +119,7 @@ export function saveAccountMetadata(email: string, metadata: AccountMetadata): v
   const path = join(getAccountDir(email), 'metadata.json')
   
   debug('accounts-storage', `Saving metadata for ${email}`)
-  writeFileSync(path, JSON.stringify(metadata, null, 2), { mode: 0o600 })
+  writeFileAtomicSync(path, JSON.stringify(metadata, null, 2), { mode: 0o600 })
 }
 
 /**
@@ -163,7 +164,7 @@ export function saveAccountCache(email: string, cache: CachedQuota): void {
   const path = join(getAccountDir(email), 'cache.json')
   
   debug('accounts-storage', `Saving cache for ${email}`)
-  writeFileSync(path, JSON.stringify(cache, null, 2))
+  writeFileAtomicSync(path, JSON.stringify(cache, null, 2))
 }
 
 /**
