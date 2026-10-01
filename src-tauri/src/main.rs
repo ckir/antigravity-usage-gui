@@ -8,7 +8,7 @@
 //! `{ "ok": true, "result": … } | { "ok": false, "error": … }`.
 //!
 //! The runner is executed by a pinned node binary shipped as a Tauri
-//! `externalBin` (`src-tauri/binaries/node-<triple>`, fetched by
+//! `externalBin` (`src-tauri/binaries/agu-node-<triple>`, fetched by
 //! `scripts/fetch-node.mjs`), so end users need no system node. That matters
 //! beyond convenience: a node that only exists in fnm/nvm-initialised shells
 //! is invisible to an app launched from Explorer/Finder/autostart, and the
@@ -64,14 +64,17 @@ fn backend_runner(app: &AppHandle) -> Result<PathBuf, String> {
 
 /// Pick the node runtime for the runner:
 /// 1. `$ANTIGRAVITY_NODE` (explicit override),
-/// 2. the bundled `externalBin` sidecar next to the app executable,
+/// 2. the bundled `externalBin` sidecar (`agu-node`) next to the app executable,
 /// 3. `node` from `PATH` (only reached by builds missing the sidecar).
+/// Not plain `node`: Linux .deb bundles install `externalBin` into /usr/bin.
+const SIDECAR_NODE: &str = if cfg!(windows) { "agu-node.exe" } else { "agu-node" };
+
 fn resolve_node(env_override: Option<OsString>, exe_dir: Option<&Path>) -> PathBuf {
     if let Some(p) = env_override.filter(|p| !p.is_empty()) {
         return PathBuf::from(p);
     }
     if let Some(dir) = exe_dir {
-        let sidecar = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let sidecar = dir.join(SIDECAR_NODE);
         if sidecar.is_file() {
             return sidecar;
         }
@@ -374,7 +377,7 @@ mod tests {
     }
 
     fn sidecar_name() -> &'static str {
-        if cfg!(windows) { "node.exe" } else { "node" }
+        SIDECAR_NODE
     }
 
     #[test]

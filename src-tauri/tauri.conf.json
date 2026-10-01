@@ -35,7 +35,7 @@
     "category": "Utility",
     "shortDescription": "Antigravity usage dashboard",
     "longDescription": "Tauri + React GUI for antigravity-usage with full CLI parity.",
-    "externalBin": ["binaries/node"],
+    "externalBin": ["binaries/agu-node"],
     "resources": { "../dist-backend/runner.cjs": "runner.cjs" }
   },
   "plugins": {

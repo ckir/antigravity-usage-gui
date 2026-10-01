@@ -185,4 +185,8 @@ describe('wakeup backend (no scheduler mutation)', () => {
     expect(cmd).toContain('trigger --scheduled')
     expect(cmd).toContain('--cooldown-ms 600000')
   })
+
+  it('quotes the node path so install dirs with spaces survive /bin/sh', () => {
+    expect(scheduledCommand('runner.cjs', 1).startsWith(`"${process.execPath}" "runner.cjs" `)).toBe(true)
+  })
 })

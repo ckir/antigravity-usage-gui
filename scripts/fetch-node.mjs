@@ -1,6 +1,6 @@
 /**
  * Fetch the pinned Node runtime that ships as the Tauri `externalBin`
- * sidecar (`src-tauri/binaries/node-<target-triple>[.exe]`). The Rust shell
+ * sidecar (`src-tauri/binaries/agu-node-<target-triple>[.exe]`). The Rust shell
  * runs the backend runner with this binary, so installed bundles need no
  * system node — a node that only exists inside fnm/nvm-initialised shells is
  * invisible to apps launched from Explorer/Finder/autostart.
@@ -53,7 +53,9 @@ async function main() {
   }
   const isWindows = platform.startsWith('win-')
   const binDir = join(root, 'src-tauri', 'binaries')
-  const dest = join(binDir, `node-${triple}${isWindows ? '.exe' : ''}`)
+  // Not plain `node`: Linux .deb bundles install externalBin into /usr/bin,
+  // where that name would collide with the distro's nodejs package.
+  const dest = join(binDir, `agu-node-${triple}${isWindows ? '.exe' : ''}`)
   const stamp = `${dest}.version`
 
   if (existsSync(dest) && existsSync(stamp) && readFileSync(stamp, 'utf8').trim() === NODE_VERSION) {
