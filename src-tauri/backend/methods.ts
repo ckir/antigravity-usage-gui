@@ -390,11 +390,86 @@ async function probeLocalServer(): Promise<DoctorReport['localServer'] | null> {
 
 const WINDOWS_TASK_NAME = 'AntigravityWakeup'
 
+/** Marker comment on our cron line (same as src-core's CRON_COMMENT_MARKER). */
+const CRON_MARKER = 'antigravity-usage-wakeup'
+
+/**
+ * Quote a path for a crontab command: cron hands the line to /bin/sh, so
+ * single quotes stop `$`, backtick and `"` from being interpreted (a `'` is
+ * written as `'\''`), and cron itself turns an unescaped `%` into a newline
+ * even inside quotes, so it is written as `\%` (cron drops the backslash).
+ */
+export function cronQuote(path: string): string {
+  return `'${path.replace(/'/g, `'\\''`).replace(/%/g, '\\%')}'`
+}
+
 /** Runner invocation embedded in cron/schtasks, carrying the install payload. */
-export function scheduledCommand(runnerPath: string, cooldownMs: number): string {
+export function scheduledCommand(
+  runnerPath: string,
+  cooldownMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  // An AppImage runs from a transient mount (/tmp/.mount_*) that vanishes
+  // when the app exits, taking node and the runner with it. Cron re-launches
+  // the AppImage file itself instead: `--wakeup-trigger` is handled headless
+  // in main.rs (no window, no display needed).
+  if (env.APPIMAGE) return `${cronQuote(env.APPIMAGE)} --wakeup-trigger --cooldown-ms ${cooldownMs}`
   // Quote node too: the bundled sidecar lives under the install dir, which
-  // may contain spaces (cron runs this line through /bin/sh).
-  return `"${process.execPath}" "${runnerPath}" trigger --scheduled --cooldown-ms ${cooldownMs}`
+  // may contain spaces.
+  return `${cronQuote(process.execPath)} ${cronQuote(runnerPath)} trigger --scheduled --cooldown-ms ${cooldownMs}`
+}
+
+function isMarkerLine(line: string): boolean {
+  return line.includes(`# ${CRON_MARKER}`) && !line.trimStart().startsWith('#')
+}
+
+/**
+ * Replace the command of our marker cron line, keeping its 5 schedule fields
+ * and the marker comment (`getCronStatus` keys off both). Works on the
+ * vendored line as well as on one this function already rewrote.
+ */
+export function rewriteCronLines(crontab: string, command: string): string {
+  return crontab
+    .split('\n')
+    .map((line) => {
+      if (!isMarkerLine(line)) return line
+      const fields = line.trim().split(/\s+/)
+      if (fields.length < 6) return line
+      return `${fields.slice(0, 5).join(' ')} ${command} # ${CRON_MARKER}`
+    })
+    .join('\n')
+}
+
+/**
+ * The crontab to write so our line launches the current AppImage, or null
+ * when nothing needs changing (not an AppImage, no line, already current).
+ * The installed cooldown is preserved.
+ */
+export function planCronRepair(
+  crontab: string,
+  defaultCooldownMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!env.APPIMAGE) return null
+  const line = crontab.split('\n').find(isMarkerLine)
+  if (!line) return null
+  const cooldownMs = Number(/--cooldown-ms (\d+)/.exec(line)?.[1] ?? defaultCooldownMs)
+  const command = scheduledCommand('', cooldownMs, env)
+  if (line.includes(command)) return null
+  return rewriteCronLines(crontab, command)
+}
+
+async function readCrontab(): Promise<string> {
+  const { stdout } = await execFileAsync('crontab', ['-l']).catch(() => ({ stdout: '' }) as never)
+  return String(stdout)
+}
+
+async function writeCrontab(content: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const proc = exec('crontab -', (err: unknown) => (err ? reject(err) : resolve()))
+    proc.stdin?.write(content.endsWith('\n') ? content : content + '\n')
+    proc.stdin?.end()
+  })
 }
 
 export function wakeupConfig(): WakeupConfig | null {
@@ -437,19 +512,23 @@ export async function wakeupInstall(
   // Point the vendored marker line at the GUI sidecar (keeps `getCronStatus`
   // working: it keys off the marker comment, not the command).
   const command = scheduledCommand(runnerPath, effectiveCooldownMs)
-  const { stdout } = await execFileAsync('crontab', ['-l']).catch(() => ({ stdout: '' }) as never)
-  const lines = String(stdout)
-    .split('\n')
-    .map((line) =>
-      line.includes('antigravity-usage-wakeup') && line.includes('antigravity-usage wakeup trigger')
-        ? line.replace('antigravity-usage wakeup trigger --scheduled', command)
-        : line,
-    )
-  await new Promise<void>((resolve, reject) => {
-    const proc = exec('crontab -', (err: unknown) => (err ? reject(err) : resolve()))
-    proc.stdin?.write(lines.join('\n') + '\n')
-    proc.stdin?.end()
-  })
+  await writeCrontab(rewriteCronLines(await readCrontab(), command))
+}
+
+/**
+ * Re-point our cron line at the current AppImage path; run at app start
+ * (main.rs) because the line breaks if the user moves the .AppImage file.
+ * No-op unless running as an AppImage with wakeup enabled. Returns whether
+ * the crontab was rewritten.
+ */
+export async function wakeupRepair(): Promise<boolean> {
+  if (process.platform === 'win32' || !process.env.APPIMAGE) return false
+  const config = loadWakeupConfig()
+  if (!config?.enabled) return false
+  const next = planCronRepair(await readCrontab(), resolveTriggerCooldownMs(config))
+  if (next === null) return false
+  await writeCrontab(next)
+  return true
 }
 
 export async function wakeupUninstall(): Promise<void> {
