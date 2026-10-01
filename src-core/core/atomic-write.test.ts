@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { closeSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { writeFileAtomicSync } from './atomic-write'
@@ -48,6 +60,21 @@ describe('writeFileAtomicSync', () => {
     writeFileSync(p, '{}', { mode: 0o640 })
     writeFileAtomicSync(p, '{"c":1}')
     expect(statSync(p).mode & 0o777).toBe(0o640)
+  })
+
+  it('writes through a symlink and keeps the link', (ctx) => {
+    const real = join(dir, 'dotfiles-config.json')
+    const link = join(dir, 'config.json')
+    writeFileSync(real, '"old"')
+    try {
+      symlinkSync(real, link, 'file')
+    } catch {
+      ctx.skip() // e.g. Windows without Developer Mode
+    }
+    writeFileAtomicSync(link, '"new"')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readFileSync(real, 'utf8')).toBe('"new"')
+    expect(readdirSync(dir).sort()).toEqual(['config.json', 'dotfiles-config.json'])
   })
 
   it('still saves when another handle holds the file open', () => {

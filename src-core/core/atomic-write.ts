@@ -15,6 +15,7 @@ import {
   fchmodSync,
   fsyncSync,
   openSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -52,6 +53,19 @@ function renameWithRetry(from: string, to: string): void {
   }
 }
 
+/**
+ * The real file behind `path`, so a symlinked state file (e.g. managed by a
+ * dotfiles tool) is updated through the link like `writeFileSync` does,
+ * instead of the rename replacing the link with a plain file.
+ */
+function resolveTarget(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return path // not there yet
+  }
+}
+
 /** The existing file's permission bits (POSIX), so a rewrite keeps them. */
 function existingMode(path: string): number | undefined {
   if (process.platform === 'win32') return undefined // only a read-only flag; copying it would block the next write
@@ -68,8 +82,9 @@ function existingMode(path: string): number | undefined {
  * 0o666 minus umask like `writeFileSync`. The parent directory must exist.
  */
 export function writeFileAtomicSync(path: string, data: string, options: { mode?: number } = {}): void {
-  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
-  const preserved = options.mode === undefined ? existingMode(path) : undefined
+  const target = resolveTarget(path)
+  const tmp = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+  const preserved = options.mode === undefined ? existingMode(target) : undefined
   const mode = options.mode ?? preserved ?? 0o666
   try {
     const fd = openSync(tmp, 'w', mode)
@@ -89,7 +104,7 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
     throw err
   }
   try {
-    renameWithRetry(tmp, path)
+    renameWithRetry(tmp, target)
   } catch (err) {
     removeQuietly(tmp)
     // Windows: a handle held open past the retries (antivirus, backup tool,
@@ -97,7 +112,7 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
     // that handle does not block, so the save is never lost; atomicity is
     // given up only in this case.
     if (process.platform === 'win32' && isRetryable(err)) {
-      writeFileSync(path, data, { mode })
+      writeFileSync(target, data, { mode })
       return
     }
     throw err
