@@ -160,11 +160,18 @@ export function writeFileAtomicSync(path: string, data: string, options: { mode?
 /**
  * The old non-atomic write, for the fallbacks. `writeFileSync` applies a mode
  * only when it creates the file, so an explicit one (e.g. 0o600 for tokens)
- * is set afterwards too (POSIX).
+ * is set afterwards too (POSIX). Best effort: chmod needs ownership, which a
+ * writable file need not have, and the content is already saved.
  */
 function writeInPlace(path: string, data: string, mode: number | undefined): void {
   writeFileSync(path, data, { mode })
-  if (mode !== undefined && process.platform !== 'win32') chmodSync(path, mode)
+  if (mode !== undefined && process.platform !== 'win32') {
+    try {
+      chmodSync(path, mode)
+    } catch {
+      // not the owner: keep the existing mode, as the old write did
+    }
+  }
 }
 
 function removeQuietly(path: string): void {
